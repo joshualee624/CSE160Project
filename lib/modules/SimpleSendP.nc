@@ -1,3 +1,7 @@
+// filenameP.nc is the logic 
+// filenameC.nc shows the wiring(routing)
+// filename.nc what does it do
+
 /**
  * ANDES Lab - University of California, Merced
  *
