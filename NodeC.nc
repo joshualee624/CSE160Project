@@ -17,7 +17,8 @@ implementation {
     components MainC;
     components Node;
     components new AMReceiverC(AM_PACK) as GeneralReceive;
-
+    components NeighborDiscoveryC;
+    Node.NeighborDiscovery -> NeighborDiscoveryC.NeighborDiscovery;
     Node -> MainC.Boot;
 
     Node.Receive -> GeneralReceive;

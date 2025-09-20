@@ -20,7 +20,7 @@ module Node{
    uses interface Receive;
 
    uses interface SimpleSend as Sender;
-
+   uses interface NeighborDiscovery;
    uses interface CommandHandler;
 }
 
@@ -38,6 +38,7 @@ implementation{
 
    event void AMControl.startDone(error_t err){
       if(err == SUCCESS){
+         call NeighborDiscovery.findNeighbors();
          dbg(GENERAL_CHANNEL, "Radio On\n");
       }else{
          //Retry until successful
@@ -50,14 +51,15 @@ implementation{
    event message_t* Receive.receive(message_t* msg, void* payload, uint8_t len){
       dbg(GENERAL_CHANNEL, "Packet Received\n");
       if(len==sizeof(pack)){
-         pack* myMsg=(pack*) payload;
+         pack* myMsg=(pack*) payload;     //(pack*) casts type (pack*) onto (void*) (pack is the struct defined in packet.h)
+         call NeighborDiscovery.handle(myMsg); 
          dbg(GENERAL_CHANNEL, "Package Payload: %s\n", myMsg->payload);
-         return msg;
+         return msg; // returns the message buffer to the system
       }
       dbg(GENERAL_CHANNEL, "Unknown Packet Type %d\n", len);
       return msg;
    }
-
+   
 
    event void CommandHandler.ping(uint16_t destination, uint8_t *payload){
       dbg(GENERAL_CHANNEL, "PING EVENT \n");
@@ -65,7 +67,9 @@ implementation{
       call Sender.send(sendPackage, destination);
    }
 
-   event void CommandHandler.printNeighbors(){}
+   event void CommandHandler.printNeighbors(){
+      call NeighborDiscovery.printNeighbors();
+   }
 
    event void CommandHandler.printRouteTable(){}
 
