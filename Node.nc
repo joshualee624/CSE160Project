@@ -91,24 +91,6 @@ implementation{
          if(myMsg->dest == TOS_NODE_ID){
             dbg (GENERAL_CHANNEL, "Packet for me. Payload: %s\n", myMsg->payload);
 
-            switch(myMsg->protocol){
-               case PROTOCOL_PING:
-                  dbg(GENERAL_CHANNEL, "Ping received from %d\n", myMsg->src);
-                  // send the ping reply
-                  makePack(&sendPackage, TOS_NODE_ID, myMsg->src, MAX_TTL, PROTOCOL_PINGREPLY, sequenceNumber++, (uint8_t*)"ping reply", PACKET_MAX_PAYLOAD_SIZE);
-                  call Sender.send(sendPackage, AM_BROADCAST_ADDR);
-                  dbg(FLOODING_CHANNEL, "Ping reply sent from Node %d\n", TOS_NODE_ID);
-                  break;
-
-               case PROTOCOL_PINGREPLY:
-                  dbg(GENERAL_CHANNEL, "Ping reply received from %d\n", myMsg->src);
-                  addNeighbor(myMsg->src);
-                  break;
-                  
-               default:
-                  dbg(GENERAL_CHANNEL, "Unknown protocol: %d\n", myMsg->protocol);
-                  break;
-            }
          }
          //if the node and packet dest dont match flood the packet so it reaches the correct node
          else if(myMsg->dest != TOS_NODE_ID){
@@ -140,9 +122,7 @@ implementation{
 //
    event void CommandHandler.ping(uint16_t destination, uint8_t *payload){
       dbg(GENERAL_CHANNEL, "PING EVENT - sending to %d\n", destination);
-      makePack(&sendPackage, TOS_NODE_ID, destination, MAX_TTL, PROTOCOL_PING, sequenceNumber++, payload, PACKET_MAX_PAYLOAD_SIZE);
-      call Sender.send(sendPackage, AM_BROADCAST_ADDR);
-      dbg(FLOODING_CHANNEL, "Ping sent from Node %d to %d\n", TOS_NODE_ID, destination);
+      
    }
 
 
