@@ -29,7 +29,7 @@ implementation{
 
 //this will give unique packets source address and sequence number in order to
 // not infinelty loop and re "use" packets we've seen befire
-   #define MAX_SEEN_PACKETS 100
+   enum {MAX_SEEN_PACKETS = 100 }
    typedef struct {
       uint16_t src;
       uint16_t seq;
@@ -59,11 +59,6 @@ implementation{
       }
    }
 
-   event void AMControl.stopDone(error_t err){}
-
-   void addNeighbor(uint16_t nodeId){
-      dbg(NEIGHBOR_CHANNEL, "Adding neighbor %d\n", nodeId);
-   }
 
    event message_t* Receive.receive(message_t* msg, void* payload, uint8_t len){
       if (len == sizeof(pack)){
