@@ -17,8 +17,13 @@ implementation {
     components MainC;
     components Node;
     components new AMReceiverC(AM_PACK) as GeneralReceive;
+    
     components NeighborDiscoveryC;
     Node.NeighborDiscovery -> NeighborDiscoveryC.NeighborDiscovery;
+    
+    components FloodingC;
+    Node.Flooding -> FloodingC.Flooding;
+    
     Node -> MainC.Boot;
 
     Node.Receive -> GeneralReceive;
@@ -28,6 +33,7 @@ implementation {
 
     components new SimpleSendC(AM_PACK);
     Node.Sender -> SimpleSendC;
+    FloodingC.Sender -> SimpleSendC;
 
     components CommandHandlerC;
     Node.CommandHandler -> CommandHandlerC;
