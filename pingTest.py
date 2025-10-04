@@ -23,15 +23,18 @@ def main():
     # s.addChannel(s.FLOODING_CHANNEL);
 
     # After sending a ping, simulate a little to prevent collision.
-    s.runTime(1);
+    s.runTime(30);
     s.ping(2, 3, "Hello, World");
     s.runTime(1);
-
     s.ping(1, 10, "Hi!");
-    s.runTime(1);
-    for i in range(1, 19):
-        s.neighborDMP(i)       #prints the neighboring nodes of node i:
-        s.runTime(1)
+    s.runTime(5);
+    s.ping(4, 7, "test 2");
+    s.runTime(5);
+    s.ping(3, 19, "test 1");
+    s.runTime(5);
+    # for i in range(1, 20):
+    #     s.neighborDMP(i)       #prints the neighboring nodes of node i:
+    #     s.runTime(1)
     
 
 if __name__ == '__main__':

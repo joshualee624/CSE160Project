@@ -52,8 +52,10 @@ implementation {
          pack* myMsg = (pack*) payload;
 
          call NeighborDiscovery.handle(myMsg);
-
-         call Flooding.handlePacket(myMsg);
+         if (myMsg -> protocol == PROTOCOL_PING){
+            call Flooding.handlePacket(myMsg);
+         }
+         
 
          return msg;
       }
@@ -65,7 +67,7 @@ implementation {
    event void CommandHandler.ping(uint16_t destination, uint8_t *payload) {
       dbg(GENERAL_CHANNEL, "PING EVENT - sending to %d\n", destination);
       sequenceNumber++;
-      makePack(&sendPackage, TOS_NODE_ID, destination, 15, 0, sequenceNumber, payload, PACKET_MAX_PAYLOAD_SIZE);
+      makePack(&sendPackage, TOS_NODE_ID, destination, 16, 0, sequenceNumber, payload, PACKET_MAX_PAYLOAD_SIZE);
       call Flooding.floodPacket(&sendPackage);
    }
 
