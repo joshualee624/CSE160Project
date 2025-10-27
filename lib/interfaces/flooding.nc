@@ -19,4 +19,5 @@ interface Flooding {
    
    // Clear seen packets list
    command void clearSeenPackets();
+   command void pingReply(uint16_t src);
 }

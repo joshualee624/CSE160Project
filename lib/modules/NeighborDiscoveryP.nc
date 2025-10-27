@@ -14,6 +14,7 @@ implementation {
      pack msg;
      uint16_t seqCount = 0;
      uint16_t neighbors[19];
+     uint32_t lastHeard[19]; // keep track of the time we last heard from each neighbor to determine if they should be dropped
      uint8_t numNeighbors = 0;
      bool hasNeighbor(uint16_t id){
         int i;
@@ -36,12 +37,49 @@ implementation {
     }
     command void NeighborDiscovery.handle(pack *p){
         if(p->protocol == PROTOCOL_ND){
-            if(!hasNeighbor(p->src) && numNeighbors < 19){
+            if(numNeighbors < 19){                      //!hasNeighbor(p->src) && 
+                uint32_t now = call neighborTimer.getNow();
+                if(!hasNeighbor(p->src)){
                 neighbors[numNeighbors] = p->src;
+                lastHeard[numNeighbors] = now;
                 numNeighbors++;
-                dbg(NEIGHBOR_CHANNEL, "Neighbor Found: %d\n", p->src);
+                dbg(NEIGHBOR_CHANNEL, "Neighbor Found: %d at time %d\n", p->src, lastHeard[numNeighbors - 1]);
+                }
+                else{   //update the last heard time
+                    int i;
+                    for(i=0; i < numNeighbors; i++){
+                        if(neighbors[i] == p->src){
+                            lastHeard[i] = now;
+                            dbg(NEIGHBOR_CHANNEL, "Neighbor Updated: %d to time %d\n", p->src, lastHeard[i]);
+                        }
+                    }
+                }
             }
         }
+    }
+    void maintainNeighbors(){
+        int i;
+        int j;
+        uint32_t now = call neighborTimer.getNow();
+        for(i = 0; i < numNeighbors; i++){
+            if(now - lastHeard[i] > 15000){ //if we haven't heard from a neighbor in 15 seconds, remove it
+                dbg(NEIGHBOR_CHANNEL, "Neighbor Lost: %d\n", neighbors[i]);
+                //shift the array down
+                for(j = i; j < numNeighbors - 1; j++){
+                    neighbors[j] = neighbors[j + 1];
+                    lastHeard[j] = lastHeard[j + 1];
+                }
+                numNeighbors--;
+                i--; //check this index again since we shifted
+            }
+        }
+    }
+
+    command int NeighborDiscovery.getNeighbors(int num){
+        return neighbors[num];
+    }
+    command int NeighborDiscovery.numNeighbors(){
+        return numNeighbors;
     }
         
 
@@ -63,6 +101,7 @@ implementation {
 
     event void neighborTimer.fired(){
       post search();
+      maintainNeighbors();
     }
 
 

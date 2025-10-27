@@ -5,4 +5,6 @@ interface NeighborDiscovery{
    // event void neighborFound(uint16_t id);
    command void printNeighbors();
    command void handle(pack *p);
+   command int getNeighbors(int num);
+   command int numNeighbors();
 }
