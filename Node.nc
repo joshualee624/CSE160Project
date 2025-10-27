@@ -48,13 +48,33 @@ implementation {
    event void AMControl.stopDone(error_t err) {}
 
    event message_t* Receive.receive(message_t* msg, void* payload, uint8_t len) {
+
       if(len == sizeof(pack)) {
          pack* myMsg = (pack*) payload;
 
          call NeighborDiscovery.handle(myMsg);
          if (myMsg -> protocol == PROTOCOL_PING){
+            if (myMsg->dest == TOS_NODE_ID) {
+               uint8_t replyPayload[PACKET_MAX_PAYLOAD_SIZE];
+               uint8_t replyLen = strlen("reply");
+               pack reply;
+               memcpy(replyPayload, "reply", replyLen);
+               replyPayload[replyLen] = '\0';
+               dbg(GENERAL_CHANNEL, "Ping from %u payload: %s\n", myMsg->src, myMsg->payload);
+
+               
+               makePack(&reply, TOS_NODE_ID, myMsg->src, MAX_TTL,
+                        PROTOCOL_PINGREPLY, ++sequenceNumber,
+                        replyPayload, replyLen+1);
+               dbg(GENERAL_CHANNEL, "Sending reply to %u\n", myMsg->src); 
+               call Flooding.floodPacket(&reply);
+            } else {
+               call Flooding.handlePacket(myMsg);
+            }
+         } else if (myMsg -> protocol == PROTOCOL_PINGREPLY){
             call Flooding.handlePacket(myMsg);
          }
+         
          
 
          return msg;

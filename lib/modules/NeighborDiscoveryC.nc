@@ -16,4 +16,5 @@ implementation{
 
     components new SimpleSendC(AM_PACK);
     NeighborDiscoveryP.SimpleSend -> SimpleSendC;
+    
 }

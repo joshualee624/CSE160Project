@@ -12,6 +12,7 @@
 module FloodingP {
    provides interface Flooding;
    uses interface SimpleSend as Sender;
+   uses interface NeighborDiscovery;
 }
 
 implementation {
@@ -38,6 +39,7 @@ implementation {
       
       dbg(FLOODING_CHANNEL, "Flooding system initialized\n");
    }
+   
 
    // Process received packet for flooding
    command void Flooding.handlePacket(pack* myMsg) {
@@ -79,9 +81,15 @@ implementation {
 
    // Send packet using flooding
    command void Flooding.floodPacket(pack* packet) {
+      uint16_t i;
       if(packet->TTL > 0) {
-         call Sender.send(*packet, AM_BROADCAST_ADDR);
-         dbg(FLOODING_CHANNEL, "Flooding packet from Node %d (TTL:%d)\n", TOS_NODE_ID, packet->TTL);
+         for(i = 0; i < call NeighborDiscovery.numNeighbors(); i++) {
+            uint16_t neighborID = call NeighborDiscovery.getNeighbors(i);
+            dbg(FLOODING_CHANNEL, "Flooding to neighbor %d\n", neighborID);
+            call Sender.send(*packet, neighborID);
+         }
+         // call Sender.send(*packet, AM_BROADCAST_ADDR);
+         // dbg(FLOODING_CHANNEL, "Flooding packet from Node %d (TTL:%d)\n", TOS_NODE_ID, packet->TTL);
          
          // Add to seen packets to prevent loopback
          call Flooding.addSeenPacket(packet->src, packet->seq);
@@ -106,6 +114,10 @@ implementation {
       seenPackets[seenPacketIndex % MAX_SEEN_PACKETS].src = src;
       seenPackets[seenPacketIndex % MAX_SEEN_PACKETS].seq = seq;
       seenPacketIndex++;
+   }
+
+   command void Flooding.pingReply(uint16_t src) {
+      dbg(FLOODING_CHANNEL, "Ping reply helper invoked for src %d\n", src);
    }
 
    // Clear seen packets list

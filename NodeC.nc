@@ -19,9 +19,10 @@ implementation {
     components new AMReceiverC(AM_PACK) as GeneralReceive;
     
     components NeighborDiscoveryC;
-    Node.NeighborDiscovery -> NeighborDiscoveryC.NeighborDiscovery;
-    
     components FloodingC;
+    Node.NeighborDiscovery -> NeighborDiscoveryC.NeighborDiscovery;
+    FloodingC.NeighborDiscovery -> NeighborDiscoveryC.NeighborDiscovery;
+    
     Node.Flooding -> FloodingC.Flooding;
     
     Node -> MainC.Boot;

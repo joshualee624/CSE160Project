@@ -28,13 +28,15 @@ def main():
     s.runTime(1);
     s.ping(1, 10, "Hi!");
     s.runTime(5);
-    s.ping(4, 7, "test 2");
-    s.runTime(5);
     s.ping(3, 19, "test 1");
     s.runTime(5);
-    # for i in range(1, 20):
-    #     s.neighborDMP(i)       #prints the neighboring nodes of node i:
-    #     s.runTime(1)
+    s.moteOff(5);
+    s.runTime(5);
+    s.ping(4, 7, "test 2");
+    s.runTime(5);
+    for i in range(1, 20):
+        s.neighborDMP(i)       #prints the neighboring nodes of node i:
+        s.runTime(1)
     
 
 if __name__ == '__main__':
