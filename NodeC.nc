@@ -20,10 +20,15 @@ implementation {
     
     components NeighborDiscoveryC;
     components FloodingC;
+    components LinkStateC;
     Node.NeighborDiscovery -> NeighborDiscoveryC.NeighborDiscovery;
     FloodingC.NeighborDiscovery -> NeighborDiscoveryC.NeighborDiscovery;
+    LinkStateC.NeighborDiscovery -> NeighborDiscoveryC.NeighborDiscovery;
     
     Node.Flooding -> FloodingC.Flooding;
+    LinkStateC.Flooding -> FloodingC.Flooding;
+    
+    Node.LinkState -> LinkStateC.LinkState;
     
     Node -> MainC.Boot;
 

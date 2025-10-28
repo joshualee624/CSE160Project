@@ -22,6 +22,7 @@ module Node {
    uses interface NeighborDiscovery;
    uses interface CommandHandler;
    uses interface Flooding;
+   uses interface LinkState;
 }
 
 implementation {
@@ -39,6 +40,7 @@ implementation {
       if(err == SUCCESS) {
          call NeighborDiscovery.findNeighbors();
          call Flooding.init();
+         call LinkState.init();
          dbg(GENERAL_CHANNEL, "Radio On\n");
       } else {
          call AMControl.start();
@@ -72,6 +74,9 @@ implementation {
                call Flooding.handlePacket(myMsg);
             }
          } else if (myMsg -> protocol == PROTOCOL_PINGREPLY){
+            call Flooding.handlePacket(myMsg);
+         } else if (myMsg->protocol == PROTOCOL_LINKEDSTATE) {
+            call LinkState.handleAdvertisement(myMsg);
             call Flooding.handlePacket(myMsg);
          }
          
