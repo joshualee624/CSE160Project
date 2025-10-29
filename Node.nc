@@ -53,6 +53,8 @@ implementation {
 
       if(len == sizeof(pack)) {
          pack* myMsg = (pack*) payload;
+         uint16_t nextHop;
+
 
          call NeighborDiscovery.handle(myMsg);
          if (myMsg -> protocol == PROTOCOL_PING){
@@ -69,12 +71,35 @@ implementation {
                         PROTOCOL_PINGREPLY, ++sequenceNumber,
                         replyPayload, replyLen+1);
                dbg(GENERAL_CHANNEL, "Sending reply to %u\n", myMsg->src); 
-               call Flooding.floodPacket(&reply);
+               
+               nextHop = call LinkState.getNextHop(myMsg->src);
+               if(nextHop != 0xFFFF) {
+                  call Sender.send(reply, nextHop);
+               } else {
+                  dbg(GENERAL_CHANNEL, "No route to %u, falling back to flood\n", myMsg->src);
+                  call Flooding.floodPacket(&reply);
+               }
             } else {
-               call Flooding.handlePacket(myMsg);
+               nextHop = call LinkState.getNextHop(myMsg->dest);
+               if(nextHop != 0xFFFF) {
+                  dbg(GENERAL_CHANNEL, "Routing packet to %u via %u\n", myMsg->dest, nextHop);
+                  call Sender.send(*myMsg, nextHop);
+               } else {
+                  dbg(GENERAL_CHANNEL, "No route to %u\n", myMsg->dest);
+               }
             }
          } else if (myMsg -> protocol == PROTOCOL_PINGREPLY){
-            call Flooding.handlePacket(myMsg);
+            if(myMsg->dest == TOS_NODE_ID) {
+               dbg(GENERAL_CHANNEL, "Ping reply received from %u\n", myMsg->src);
+            } else {
+               uint16_t nextHop = call LinkState.getNextHop(myMsg->dest);
+               if(nextHop != 0xFFFF) {
+                  dbg(GENERAL_CHANNEL, "Routing ping reply to %u via %u\n", myMsg->dest, nextHop);
+                  call Sender.send(*myMsg, nextHop);
+               } else {
+                  dbg(GENERAL_CHANNEL, "No route to %u\n", myMsg->dest);
+               }
+            }
          } else if (myMsg->protocol == PROTOCOL_LINKEDSTATE) {
             call LinkState.handleAdvertisement(myMsg);
             call Flooding.handlePacket(myMsg);
@@ -90,10 +115,19 @@ implementation {
    }
 
    event void CommandHandler.ping(uint16_t destination, uint8_t *payload) {
+      uint16_t nextHop;
       dbg(GENERAL_CHANNEL, "PING EVENT - sending to %d\n", destination);
       sequenceNumber++;
       makePack(&sendPackage, TOS_NODE_ID, destination, 16, 0, sequenceNumber, payload, PACKET_MAX_PAYLOAD_SIZE);
-      call Flooding.floodPacket(&sendPackage);
+      
+      nextHop = call LinkState.getNextHop(destination);
+      if(nextHop != 0xFFFF) {
+         dbg(GENERAL_CHANNEL, "Sending ping to %u via next hop %u\n", destination, nextHop);
+         call Sender.send(sendPackage, nextHop);
+      } else {
+         dbg(GENERAL_CHANNEL, "No route to %u, falling back to flood\n", destination);
+         call Flooding.floodPacket(&sendPackage);
+      }
    }
 
    event void CommandHandler.printNeighbors() {
