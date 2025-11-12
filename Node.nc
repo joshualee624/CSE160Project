@@ -133,7 +133,9 @@ implementation {
    event void CommandHandler.printNeighbors() {
       call NeighborDiscovery.printNeighbors();
    }
-   event void CommandHandler.printRouteTable() {}
+   event void CommandHandler.printRouteTable() {
+      call LinkState.printRoutingTable();
+   }
    event void CommandHandler.printLinkState() {}
    event void CommandHandler.printDistanceVector() {}
    event void CommandHandler.setTestServer() {}

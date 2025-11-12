@@ -20,7 +20,8 @@ def main():
     s.addChannel(s.COMMAND_CHANNEL);
     s.addChannel(s.GENERAL_CHANNEL);
     # s.addChannel(s.NEIGHBOR_CHANNEL);
-    s.addChannel(s.FLOODING_CHANNEL);
+    # s.addChannel(s.FLOODING_CHANNEL);
+    s.addChannel(s.ROUTING_CHANNEL);
 
     # After sending a ping, simulate a little to prevent collision.
     s.runTime(30);
@@ -30,10 +31,20 @@ def main():
     s.runTime(5);
     s.ping(3, 19, "test 1");
     s.runTime(5);
-    s.moteOff(5);
+    # s.moteOff(5);
+    # s.runTime(5);
+    # s.ping(4, 7, "test 2");
+    # s.runTime(5);
+    s.routeDMP(4);
     s.runTime(5);
-    s.ping(4, 7, "test 2");
+    s.ping(16, 4, "P2 Test 1");
     s.runTime(5);
+    s.moteOff(9);
+    s.runTime(30);
+    s.ping(5, 10, "P2 Test 2");
+    s.runTime(30);
+    s.routeDMP(7);
+    s.runTime(30);
     for i in range(1, 20):
         s.neighborDMP(i)       #prints the neighboring nodes of node i:
         s.runTime(1)
