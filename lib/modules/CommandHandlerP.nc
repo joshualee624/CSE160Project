@@ -68,15 +68,23 @@ implementation{
                 signal CommandHandler.printRouteTable();
                 break;
 
-            case CMD_TEST_CLIENT:
-                dbg(COMMAND_CHANNEL, "Command Type: Client\n");
-                signal CommandHandler.setTestClient();
+            case CMD_TEST_CLIENT: {
+                uint16_t dest = buff[0] | ((uint16_t)buff[1] << 8);
+                uint8_t srcPort = buff[2];
+                uint8_t destPort = buff[3];
+                uint16_t transfer = buff[4] | ((uint16_t)buff[5] << 8);
+                dbg(COMMAND_CHANNEL, "Command Type: Client (dest=%u, srcPort=%u, destPort=%u, transfer=%u)\n",
+                    dest, srcPort, destPort, transfer);
+                signal CommandHandler.setTestClient(dest, srcPort, destPort, transfer);
                 break;
+            }
 
-            case CMD_TEST_SERVER:
-                dbg(COMMAND_CHANNEL, "Command Type: Client\n");
-                signal CommandHandler.setTestServer();
+            case CMD_TEST_SERVER: {
+                uint8_t port = buff[0];
+                dbg(COMMAND_CHANNEL, "Command Type: Server (port=%u)\n", port);
+                signal CommandHandler.setTestServer(port);
                 break;
+            }
 
             default:
                 dbg(COMMAND_CHANNEL, "CMD_ERROR: \"%d\" does not match any known commands.\n", msg->id);

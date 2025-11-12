@@ -41,6 +41,15 @@ implementation {
     Node.Sender -> SimpleSendC;
     FloodingC.Sender -> SimpleSendC;
 
+    components TransportC;
+    Node.Transport -> TransportC.Transport;
+    TransportC.Sender -> SimpleSendC;
+
+    components new TimerMilliC() as ServerReadTimerC;
+    components new TimerMilliC() as ClientWriteTimerC;
+    Node.ServerReadTimer -> ServerReadTimerC;
+    Node.ClientWriteTimer -> ClientWriteTimerC;
+
     components CommandHandlerC;
     Node.CommandHandler -> CommandHandlerC;
 }

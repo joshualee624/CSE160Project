@@ -6,6 +6,7 @@ enum{
     ROOT_SOCKET_ADDR = 255,
     ROOT_SOCKET_PORT = 255,
     SOCKET_BUFFER_SIZE = 128,
+    NULL_SOCKET = 0xFF,
 };
 
 enum socket_state{
@@ -27,6 +28,12 @@ typedef nx_struct socket_addr_t{
 }socket_addr_t;
 
 
+typedef struct socket_buffer_t{
+    uint8_t buffer[SOCKET_BUFFER_SIZE];
+    uint8_t head;
+    uint8_t tail;
+} socket_buffer_t;
+
 // File descripter id. Each id is associated with a socket_store_t
 typedef uint8_t socket_t;
 
@@ -38,13 +45,13 @@ typedef struct socket_store_t{
     socket_addr_t dest;
 
     // This is the sender portion.
-    uint8_t sendBuff[SOCKET_BUFFER_SIZE];
+    socket_buffer_t sendBuff;
     uint8_t lastWritten;
     uint8_t lastAck;
     uint8_t lastSent;
 
     // This is the receiver portion
-    uint8_t rcvdBuff[SOCKET_BUFFER_SIZE];
+    socket_buffer_t rcvdBuff;
     uint8_t lastRead;
     uint8_t lastRcvd;
     uint8_t nextExpected;
