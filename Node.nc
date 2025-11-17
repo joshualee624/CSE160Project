@@ -40,6 +40,10 @@ implementation {
    uint16_t clientTransfer = 0;
    uint16_t clientDataSent = 0;
 
+   void closeAcceptedSocket(uint8_t index);
+   void resetAcceptedSockets();
+   void cleanupServerSocket();
+   void cleanupClientSocket();
    void makePack(pack *Package, uint16_t src, uint16_t dest, uint16_t TTL, uint16_t Protocol, uint16_t seq, uint8_t *payload, uint8_t length);
 
    event void Boot.booted() {
@@ -168,6 +172,8 @@ implementation {
    event void CommandHandler.setTestServer(uint8_t port) {
       socket_addr_t addr;
       
+      cleanupServerSocket();
+
       serverSocket = call Transport.socket();
       if(serverSocket == NULL_SOCKET) {
          dbg(TRANSPORT_CHANNEL, "Failed to create server socket\n");
@@ -179,11 +185,13 @@ implementation {
       
       if(call Transport.bind(serverSocket, &addr) == FAIL) {
          dbg(TRANSPORT_CHANNEL, "Failed to bind server socket\n");
+         cleanupServerSocket();
          return;
       }
       
       if(call Transport.listen(serverSocket) == FAIL) {
          dbg(TRANSPORT_CHANNEL, "Failed to listen on server socket\n");
+         cleanupServerSocket();
          return;
       }
       
@@ -196,6 +204,8 @@ implementation {
       socket_addr_t myAddr;
       socket_addr_t destAddr;
       
+      cleanupClientSocket();
+
       clientSocket = call Transport.socket();
       if(clientSocket == NULL_SOCKET) {
          dbg(TRANSPORT_CHANNEL, "Failed to create client socket\n");
@@ -207,6 +217,7 @@ implementation {
       
       if(call Transport.bind(clientSocket, &myAddr) == FAIL) {
          dbg(TRANSPORT_CHANNEL, "Failed to bind client socket\n");
+         cleanupClientSocket();
          return;
       }
       
@@ -218,6 +229,7 @@ implementation {
       
       if(call Transport.connect(clientSocket, &destAddr) == FAIL) {
          dbg(TRANSPORT_CHANNEL, "Failed to connect\n");
+         cleanupClientSocket();
          return;
       }
       
@@ -232,16 +244,36 @@ implementation {
       uint8_t i;
       uint8_t buffer[128];
       uint16_t bytesRead;
+      bool inserted = FALSE;
+
+      if(serverSocket == NULL_SOCKET) {
+         call ServerReadTimer.stop();
+         return;
+      }
       
       newSocket = call Transport.accept(serverSocket);
       if(newSocket != NULL_SOCKET) {
-         if(numAcceptedSockets < MAX_NUM_OF_SOCKETS) {
-            acceptedSockets[numAcceptedSockets++] = newSocket;
+         for(i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+            if(acceptedSockets[i] == NULL_SOCKET) {
+               acceptedSockets[i] = newSocket;
+               if(numAcceptedSockets < MAX_NUM_OF_SOCKETS) {
+                  numAcceptedSockets++;
+               }
+               inserted = TRUE;
+               break;
+            }
+         }
+
+         if(inserted) {
             dbg(TRANSPORT_CHANNEL, "New connection accepted: socket=%d\n", newSocket);
+         } else {
+            dbg(TRANSPORT_CHANNEL, "Connection table full, closing new socket=%d\n", newSocket);
+            call Transport.close(newSocket);
+            call Transport.release(newSocket);
          }
       }
       
-      for(i = 0; i < numAcceptedSockets; i++) {
+      for(i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
          if(acceptedSockets[i] != NULL_SOCKET) {
             bytesRead = call Transport.read(acceptedSockets[i], buffer, 128);
             if(bytesRead > 0) {
@@ -258,8 +290,14 @@ implementation {
       uint16_t bytesToWrite;
       uint16_t written;
       
-      if(clientSocket == NULL_SOCKET || clientDataSent >= clientTransfer) {
+      if(clientSocket == NULL_SOCKET) {
          call ClientWriteTimer.stop();
+         return;
+      }
+
+      if(clientDataSent >= clientTransfer) {
+         dbg(TRANSPORT_CHANNEL, "Client transfer complete, initiating teardown\n");
+         cleanupClientSocket();
          return;
       }
       
@@ -277,8 +315,52 @@ implementation {
       
       if(clientDataSent >= clientTransfer) {
          dbg(TRANSPORT_CHANNEL, "Client finished sending all data\n");
-         call ClientWriteTimer.stop();
+         cleanupClientSocket();
       }
+   }
+
+   void closeAcceptedSocket(uint8_t index) {
+      if(index >= MAX_NUM_OF_SOCKETS) {
+         return;
+      }
+
+      if(acceptedSockets[index] != NULL_SOCKET) {
+         call Transport.close(acceptedSockets[index]);
+         call Transport.release(acceptedSockets[index]);
+         acceptedSockets[index] = NULL_SOCKET;
+         if(numAcceptedSockets > 0) {
+            numAcceptedSockets--;
+         }
+      }
+   }
+
+   void resetAcceptedSockets() {
+      uint8_t i;
+      for(i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+         closeAcceptedSocket(i);
+      }
+      numAcceptedSockets = 0;
+   }
+
+   void cleanupServerSocket() {
+      call ServerReadTimer.stop();
+      resetAcceptedSockets();
+      if(serverSocket != NULL_SOCKET) {
+         call Transport.close(serverSocket);
+         call Transport.release(serverSocket);
+         serverSocket = NULL_SOCKET;
+      }
+   }
+
+   void cleanupClientSocket() {
+      call ClientWriteTimer.stop();
+      if(clientSocket != NULL_SOCKET) {
+         call Transport.close(clientSocket);
+         call Transport.release(clientSocket);
+         clientSocket = NULL_SOCKET;
+      }
+      clientTransfer = 0;
+      clientDataSent = 0;
    }
 
    event void CommandHandler.setAppServer() {}

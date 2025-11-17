@@ -146,6 +146,7 @@ implementation {
         sockets[fd].dest.port = addr->port;
         sockets[fd].dest.addr = addr->addr;
         sockets[fd].state = SYN_SENT;
+        sockets[fd].flag = SYN_SENT;
         sockets[fd].lastSent = call Random.rand16();
         
         makeTCPPacket(&tcpPacket, sockets[fd].src, sockets[fd].dest.port,
