@@ -10,12 +10,18 @@ enum{
 };
 
 enum socket_state{
-    CLOSED,
+    CLOSED = 0,
     LISTEN,
-    ESTABLISHED,
     SYN_SENT,
     SYN_RCVD,
+    ESTABLISHED,
+    FIN_WAIT_1,
+    FIN_WAIT_2,
+    CLOSE_WAIT,
+    LAST_ACK,
+    TIME_WAIT
 };
+
 
 
 typedef nx_uint8_t nx_socket_port_t;
@@ -32,6 +38,7 @@ typedef struct socket_buffer_t{
     uint8_t buffer[SOCKET_BUFFER_SIZE];
     uint8_t head;
     uint8_t tail;
+    // head and tail used to control window
 } socket_buffer_t;
 
 // File descripter id. Each id is associated with a socket_store_t

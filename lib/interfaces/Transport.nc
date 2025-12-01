@@ -117,11 +117,17 @@ interface Transport{
     * @param
     *    socket_t fd: file descriptor that is associated with the socket
     *       that you are closing. 
-    * @side Client/Server
-    * @return socket_t - returns SUCCESS if you are able to attempt
-    *    a closure with the fd passed, else return FAIL.
-    */
+   * @side Client/Server
+   * @return socket_t - returns SUCCESS if you are able to attempt
+   *    a closure with the fd passed, else return FAIL.
+   */
    command error_t close(socket_t fd);
+
+   /**
+    * Check whether all outstanding data has been ACKed and the send buffer is empty,
+    * meaning a FIN can be sent without returning EBUSY.
+    */
+   command bool readyToClose(socket_t fd);
 
    /**
     * A hard close, which is not graceful. This portion is optional.

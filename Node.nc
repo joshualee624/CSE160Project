@@ -39,8 +39,10 @@ implementation {
    uint8_t numAcceptedSockets = 0;
    uint16_t clientTransfer = 0;
    uint16_t clientDataSent = 0;
+   bool clientCloseWarned = FALSE;
 
-   void closeAcceptedSocket(uint8_t index);
+
+   void closeAcceptedSocket(uint8_t idx);
    void resetAcceptedSockets();
    void cleanupServerSocket();
    void cleanupClientSocket();
@@ -168,7 +170,6 @@ implementation {
 
    event void CommandHandler.printLinkState() {}
    event void CommandHandler.printDistanceVector() {}
-
    event void CommandHandler.setTestServer(uint8_t port) {
       socket_addr_t addr;
       
@@ -263,7 +264,6 @@ implementation {
                break;
             }
          }
-
          if(inserted) {
             dbg(TRANSPORT_CHANNEL, "New connection accepted: socket=%d\n", newSocket);
          } else {
@@ -277,11 +277,12 @@ implementation {
          if(acceptedSockets[i] != NULL_SOCKET) {
             bytesRead = call Transport.read(acceptedSockets[i], buffer, 128);
             if(bytesRead > 0) {
-               dbg(TRANSPORT_CHANNEL, "Server read %d bytes from socket %d\n", 
+               dbg(TRANSPORT_CHANNEL, "Server read %d bytes from socket %d\n",
                    bytesRead, acceptedSockets[i]);
             }
          }
       }
+
    }
 
    event void ClientWriteTimer.fired() {
@@ -289,6 +290,7 @@ implementation {
       uint16_t i;
       uint16_t bytesToWrite;
       uint16_t written;
+      error_t res;
       
       if(clientSocket == NULL_SOCKET) {
          call ClientWriteTimer.stop();
@@ -296,15 +298,31 @@ implementation {
       }
 
       if(clientDataSent >= clientTransfer) {
-         dbg(TRANSPORT_CHANNEL, "Client transfer complete, initiating teardown\n");
-         cleanupClientSocket();
+         dbg(TRANSPORT_CHANNEL, "Client transfer complete, initiating FIN\n");
+         if (!call Transport.readyToClose(clientSocket)) {
+            if (!clientCloseWarned) {
+               dbg(TRANSPORT_CHANNEL, "Close deferred; pending data still flushing\n");
+               clientCloseWarned = TRUE;
+            }
+            return;
+         }
+         clientCloseWarned = FALSE;
+         res = call Transport.close(clientSocket);
+         if(res == SUCCESS) {
+            dbg(TRANSPORT_CHANNEL, "FIN sent for client socket %d\n", clientSocket);
+            // Stop writes; wait for transport to finish and then you can release after CLOSED/TIME_WAIT
+            call ClientWriteTimer.stop();
+         } else {
+            dbg(TRANSPORT_CHANNEL, "Close failed\n");
+         }
          return;
       }
       
       bytesToWrite = (clientTransfer - clientDataSent > 20) ? 20 : (clientTransfer - clientDataSent);
       
       for(i = 0; i < bytesToWrite; i++) {
-         buffer[i] = (clientDataSent + i) & 0xFF;
+         // Keep payload bytes non-zero so the receiver counts the full length
+         buffer[i] = (uint8_t)(((clientDataSent + i) % 255) + 1);
       }
       
       written = call Transport.write(clientSocket, buffer, bytesToWrite);
@@ -313,21 +331,15 @@ implementation {
       dbg(TRANSPORT_CHANNEL, "Client wrote %d bytes, total sent: %d/%d\n", 
           written, clientDataSent, clientTransfer);
       
-      if(clientDataSent >= clientTransfer) {
-         dbg(TRANSPORT_CHANNEL, "Client finished sending all data\n");
-         cleanupClientSocket();
-      }
    }
 
-   void closeAcceptedSocket(uint8_t index) {
-      if(index >= MAX_NUM_OF_SOCKETS) {
+
+   void closeAcceptedSocket(uint8_t idx) {
+      if(idx >= MAX_NUM_OF_SOCKETS) {
          return;
       }
-
-      if(acceptedSockets[index] != NULL_SOCKET) {
-         call Transport.close(acceptedSockets[index]);
-         call Transport.release(acceptedSockets[index]);
-         acceptedSockets[index] = NULL_SOCKET;
+      if(acceptedSockets[idx] != NULL_SOCKET) {
+         acceptedSockets[idx] = NULL_SOCKET;
          if(numAcceptedSockets > 0) {
             numAcceptedSockets--;
          }
@@ -345,22 +357,15 @@ implementation {
    void cleanupServerSocket() {
       call ServerReadTimer.stop();
       resetAcceptedSockets();
-      if(serverSocket != NULL_SOCKET) {
-         call Transport.close(serverSocket);
-         call Transport.release(serverSocket);
-         serverSocket = NULL_SOCKET;
-      }
+      serverSocket = NULL_SOCKET;
    }
 
    void cleanupClientSocket() {
       call ClientWriteTimer.stop();
-      if(clientSocket != NULL_SOCKET) {
-         call Transport.close(clientSocket);
-         call Transport.release(clientSocket);
-         clientSocket = NULL_SOCKET;
-      }
+      clientSocket = NULL_SOCKET;
       clientTransfer = 0;
       clientDataSent = 0;
+      clientCloseWarned = FALSE;
    }
 
    event void CommandHandler.setAppServer() {}
