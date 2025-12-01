@@ -14,6 +14,7 @@ implementation {
     socket_store_t sockets[MAX_NUM_OF_SOCKETS];
     uint8_t numSockets = 0;
     bool closeRequested[MAX_NUM_OF_SOCKETS];
+    bool acceptedOnce[MAX_NUM_OF_SOCKETS]; //see which sockets were returned by accept()
 
     tcp_pack tcpPacket;
     pack ipPacket;
@@ -108,6 +109,7 @@ implementation {
             sockets[fd].RTT = 0;
             sockets[fd].effectiveWindow = SOCKET_BUFFER_SIZE;
             closeRequested[fd] = FALSE;
+            acceptedOnce[fd] = FALSE;
             dbg(TRANSPORT_CHANNEL, "Socket created: fd=%d\n", fd);
         }
         return fd;
@@ -134,13 +136,15 @@ implementation {
     command socket_t Transport.accept(socket_t fd) {
         uint8_t i;
         for(i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
-            if(sockets[i].flag == SYN_RCVD && sockets[i].src == sockets[fd].src) {
+            if(!acceptedOnce[i] && sockets[i].state == ESTABLISHED && sockets[i].src == sockets[fd].src) {
+                acceptedOnce[i] = TRUE;
                 dbg(TRANSPORT_CHANNEL, "Connection accepted: new_fd=%d\n", i);
                 return i;
             }
         }
         return NULL_SOCKET;
     }
+    uint8_t getRecvWindow(socket_t fd); //forward declare
     
     command error_t Transport.connect(socket_t fd, socket_addr_t *addr) {
         if(fd >= MAX_NUM_OF_SOCKETS) {
@@ -155,7 +159,7 @@ implementation {
         
         makeTCPPacket(&tcpPacket, sockets[fd].src, sockets[fd].dest.port,
                       sockets[fd].lastSent, 0, SYN_FLAG, 
-                      SOCKET_BUFFER_SIZE, NULL, 0);
+                      getRecvWindow(fd), NULL, 0);
         
         makeIPPacket(&ipPacket, TOS_NODE_ID, sockets[fd].dest.addr, 
                      MAX_TTL, PROTOCOL_TCP, 0, (uint8_t*)&tcpPacket, 
@@ -170,22 +174,36 @@ implementation {
     }
     void trySendQueued(socket_t fd) {
         uint8_t dataLen;
-        if (sockets[fd].state != ESTABLISHED) return;
-        if (sockets[fd].lastSent != sockets[fd].lastAck) return; // something in flight
-        if (sockets[fd].sendBuff.head == sockets[fd].sendBuff.tail) return; // nothing queued
 
+        if (sockets[fd].state != ESTABLISHED) return;
+        if (sockets[fd].lastSent != sockets[fd].lastAck) return;
+        if (sockets[fd].sendBuff.head == sockets[fd].sendBuff.tail) return;
+        // stop-and-wait: don't send a new packet if there is one in flight
+
+        // how much is queued in send buffer
         dataLen = sockets[fd].sendBuff.tail >= sockets[fd].sendBuff.head
               ? sockets[fd].sendBuff.tail - sockets[fd].sendBuff.head
               : SOCKET_BUFFER_SIZE - sockets[fd].sendBuff.head;
         if (dataLen > TCP_PACKET_MAX_PAYLOAD_SIZE) dataLen = TCP_PACKET_MAX_PAYLOAD_SIZE;
 
+        //clamp by the peer's advertised window (in bytes)
+        if (dataLen > sockets[fd].effectiveWindow) {
+            dataLen = sockets[fd].effectiveWindow;
+        }
+        if (dataLen == 0) {
+            // Peer window is currently 0: DO NOT send, wait for a later ACK
+            return;
+        }
+
         makeTCPPacket(&tcpPacket, sockets[fd].src, sockets[fd].dest.port,
                   sockets[fd].lastSent + 1, sockets[fd].nextExpected,
-                  DATA_FLAG, SOCKET_BUFFER_SIZE,
+                  DATA_FLAG, getRecvWindow(fd),   //advertise receive window
                   &sockets[fd].sendBuff.buffer[sockets[fd].sendBuff.head],
                   dataLen);
+
         makeIPPacket(&ipPacket, TOS_NODE_ID, sockets[fd].dest.addr,
                  MAX_TTL, PROTOCOL_TCP, 0, (uint8_t*)&tcpPacket, sizeof(tcp_pack));
+
         call Sender.send(ipPacket, sockets[fd].dest.addr);
         sockets[fd].lastSent += dataLen;
         call RetransmitTimer.startOneShot(10000);
@@ -198,7 +216,7 @@ implementation {
                   finSeq,                    // FIN sequence number
                   sockets[fd].nextExpected,     // ACK what we received
                   FIN_FLAG,
-                  SOCKET_BUFFER_SIZE,
+                  getRecvWindow(fd),
                   NULL,
                   0);
         makeIPPacket(&ipPacket,
@@ -222,7 +240,7 @@ implementation {
                   finSeq,
                   sockets[fd].nextExpected,
                   FIN_FLAG,
-                  SOCKET_BUFFER_SIZE,
+                  getRecvWindow(fd),
                   NULL,
                   0);
         makeIPPacket(&ipPacket,
@@ -238,6 +256,29 @@ implementation {
         sockets[fd].lastSent = finSeq;
         call RetransmitTimer.startOneShot(10000);
     }
+    uint8_t getRecvWindow(socket_t fd) {
+        uint16_t head = sockets[fd].rcvdBuff.head;
+        uint16_t tail = sockets[fd].rcvdBuff.tail;
+        uint16_t used;
+        uint16_t free;
+
+        if (tail >= head) {
+            used = tail - head;
+        } else {
+            used = SOCKET_BUFFER_SIZE - head + tail;
+        }
+
+        // free space in our receive buffer
+        if (used >= SOCKET_BUFFER_SIZE) {
+            free = 0;
+        } else {
+            free = SOCKET_BUFFER_SIZE - used;
+        }
+
+        if (free > 255) free = 255;  // field is uint8_t
+        return (uint8_t)free;
+    }
+
 
 
     
@@ -282,6 +323,7 @@ implementation {
         sockets[fd].src = 0;
         sockets[fd].dest.port = 0;
         sockets[fd].dest.addr = 0;
+        acceptedOnce[fd] = FALSE;
         
         dbg(TRANSPORT_CHANNEL, "Socket released (hard close): fd=%d\n", fd);
         
@@ -360,7 +402,7 @@ implementation {
                         
                         makeTCPPacket(&tcpPacket, sockets[newFd].src, sockets[newFd].dest.port,
                                       sockets[newFd].lastSent, sockets[newFd].nextExpected,
-                                      SYN_ACK_FLAG, SOCKET_BUFFER_SIZE, NULL, 0);
+                                      SYN_ACK_FLAG, getRecvWindow(newFd), NULL, 0);
                         
                         makeIPPacket(&ipPacket, TOS_NODE_ID, sockets[newFd].dest.addr,
                                      MAX_TTL, PROTOCOL_TCP, 0, (uint8_t*)&tcpPacket,
@@ -380,6 +422,7 @@ implementation {
         if(fd == NULL_SOCKET) {
             return FAIL;
         }
+        sockets[fd].effectiveWindow = tcpPack->advertisedWindow;
         
         if(tcpPack->flag == SYN_ACK_FLAG) {
             if(sockets[fd].state == SYN_SENT) {
@@ -390,7 +433,7 @@ implementation {
                 
                 makeTCPPacket(&tcpPacket, sockets[fd].src, sockets[fd].dest.port,
                               sockets[fd].lastSent + 1, sockets[fd].nextExpected,
-                              ACK_FLAG, SOCKET_BUFFER_SIZE, NULL, 0);
+                              ACK_FLAG, getRecvWindow(fd), NULL, 0);
                 
                 makeIPPacket(&ipPacket, TOS_NODE_ID, sockets[fd].dest.addr,
                              MAX_TTL, PROTOCOL_TCP, 0, (uint8_t*)&tcpPacket,
@@ -445,7 +488,7 @@ implementation {
                 }
                 dbg(TRANSPORT_CHANNEL, "ACK received: fd=%d, ack=%d\n", fd, tcpPack->ack);
             } else if (sockets[fd].state == FIN_WAIT_1) {
-                // Did this ACK cover our FIN?
+                // Check if this ACK covers the FIN
                 if (tcpPack->ack > sockets[fd].lastSent) {
                     sockets[fd].state = FIN_WAIT_2;
                     call RetransmitTimer.stop(); // stop FIN retransmit
@@ -471,7 +514,7 @@ implementation {
                 
                 makeTCPPacket(&tcpPacket, sockets[fd].src, sockets[fd].dest.port,
                               sockets[fd].lastSent, sockets[fd].nextExpected,
-                              ACK_FLAG, SOCKET_BUFFER_SIZE, NULL, 0);
+                              ACK_FLAG, getRecvWindow(fd), NULL, 0);
                 
                 makeIPPacket(&ipPacket, TOS_NODE_ID, sockets[fd].dest.addr,
                              MAX_TTL, PROTOCOL_TCP, 0, (uint8_t*)&tcpPacket,
@@ -489,7 +532,7 @@ implementation {
             
             makeTCPPacket(&tcpPacket, sockets[fd].src, sockets[fd].dest.port,
                           sockets[fd].lastSent, tcpPack->seq + 1,
-                          ACK_FLAG, SOCKET_BUFFER_SIZE, NULL, 0);
+                          ACK_FLAG, getRecvWindow(fd), NULL, 0);
             
             makeIPPacket(&ipPacket, TOS_NODE_ID, sockets[fd].dest.addr,
                          MAX_TTL, PROTOCOL_TCP, 0, (uint8_t*)&tcpPacket,
@@ -513,10 +556,12 @@ implementation {
                 sockets[fd].state = TIME_WAIT;
                 call RetransmitTimer.stop();
                 call TransportTimer.startOneShot(5000); // TIME_WAIT duration
+                dbg(TRANSPORT_CHANNEL, "FIN received during FIN_WAIT_1: entering TIME_WAIT\n");
             }
             else if (sockets[fd].state == FIN_WAIT_2) {
             sockets[fd].state = TIME_WAIT;
             call TransportTimer.startOneShot(5000);
+            dbg(TRANSPORT_CHANNEL, "FIN received: fd=%d, entering TIME_WAIT\n", fd);
             }
             
             dbg(TRANSPORT_CHANNEL, "FIN received and ACKed: fd=%d, connection closed\n", fd);
@@ -540,7 +585,7 @@ implementation {
                 
                 makeTCPPacket(&tcpPacket, sockets[i].src, sockets[i].dest.port,
                               sockets[i].lastAck + 1, sockets[i].nextExpected,
-                              DATA_FLAG, SOCKET_BUFFER_SIZE,
+                              DATA_FLAG, getRecvWindow(i),
                               &sockets[i].sendBuff.buffer[sockets[i].sendBuff.head],
                               dataLen);
                 

@@ -277,27 +277,92 @@ implementation {
          if(acceptedSockets[i] != NULL_SOCKET) {
             bytesRead = call Transport.read(acceptedSockets[i], buffer, 128);
             if(bytesRead > 0) {
-               dbg(TRANSPORT_CHANNEL, "Server read %d bytes from socket %d\n",
-                   bytesRead, acceptedSockets[i]);
+               uint16_t j;
+               
+               // Decode and print 16-bit values from this chunk
+               dbg(TRANSPORT_CHANNEL, "Reading Data:");
+               for (j = 0; j + 1 < bytesRead; j += 2) {
+                  uint8_t hiByte = buffer[j];
+                  uint8_t loByte = buffer[j + 1];
+
+                  uint8_t hi = hiByte - 1;
+                  uint8_t lo = loByte - 1;
+
+                  uint16_t value = ((uint16_t)hi << 8) | (uint16_t)lo;
+                  dbg(TRANSPORT_CHANNEL, "%hu,", value);
+               }
+               dbg(TRANSPORT_CHANNEL, "\n");
+               // dbg(TRANSPORT_CHANNEL, "Server read %d bytes from socket %d\n",
+               //     bytesRead, acceptedSockets[i]);
             }
          }
       }
 
    }
 
+   // event void ClientWriteTimer.fired() {
+   //    uint8_t buffer[20];
+   //    uint16_t i;
+   //    uint16_t bytesToWrite;
+   //    uint16_t written;
+   //    error_t res;
+      
+   //    if(clientSocket == NULL_SOCKET) {
+   //       call ClientWriteTimer.stop();
+   //       return;
+   //    }
+
+   //    if(clientDataSent >= clientTransfer) {
+   //       dbg(TRANSPORT_CHANNEL, "Client transfer complete, initiating FIN\n");
+   //       if (!call Transport.readyToClose(clientSocket)) {
+   //          if (!clientCloseWarned) {
+   //             dbg(TRANSPORT_CHANNEL, "Close deferred; pending data still flushing\n");
+   //             clientCloseWarned = TRUE;
+   //          }
+   //          return;
+   //       }
+   //       clientCloseWarned = FALSE;
+   //       res = call Transport.close(clientSocket);
+   //       if(res == SUCCESS) {
+   //          dbg(TRANSPORT_CHANNEL, "FIN sent for client socket %d\n", clientSocket);
+   //          // Stop writes; wait for transport to finish and then you can release after CLOSED/TIME_WAIT
+   //          call ClientWriteTimer.stop();
+   //       } else {
+   //          dbg(TRANSPORT_CHANNEL, "Close failed\n");
+   //       }
+   //       return;
+   //    }
+      
+   //    bytesToWrite = (clientTransfer - clientDataSent > 20) ? 20 : (clientTransfer - clientDataSent);
+      
+   //    for(i = 0; i < bytesToWrite; i++) {
+   //       // Keep payload bytes non-zero so the receiver counts the full length
+   //       buffer[i] = (uint8_t)(((clientDataSent + i) % 255) + 1);
+   //    }
+      
+   //    written = call Transport.write(clientSocket, buffer, bytesToWrite);
+   //    clientDataSent += written;
+      
+   //    dbg(TRANSPORT_CHANNEL, "Client wrote %d bytes, total sent: %d/%d\n", 
+   //        written, clientDataSent, clientTransfer);
+      
+   // }
    event void ClientWriteTimer.fired() {
-      uint8_t buffer[20];
+      uint8_t  buffer[20];
       uint16_t i;
       uint16_t bytesToWrite;
       uint16_t written;
-      error_t res;
+      uint16_t remaining;
+      uint16_t baseIndex;   // how many full 16-bit values we’ve already sent
+      error_t  res;
       
-      if(clientSocket == NULL_SOCKET) {
+      if (clientSocket == NULL_SOCKET) {
          call ClientWriteTimer.stop();
          return;
       }
 
-      if(clientDataSent >= clientTransfer) {
+      // All requested bytes have been sent → start graceful close
+      if (clientDataSent >= clientTransfer) {
          dbg(TRANSPORT_CHANNEL, "Client transfer complete, initiating FIN\n");
          if (!call Transport.readyToClose(clientSocket)) {
             if (!clientCloseWarned) {
@@ -308,30 +373,55 @@ implementation {
          }
          clientCloseWarned = FALSE;
          res = call Transport.close(clientSocket);
-         if(res == SUCCESS) {
+         if (res == SUCCESS) {
             dbg(TRANSPORT_CHANNEL, "FIN sent for client socket %d\n", clientSocket);
-            // Stop writes; wait for transport to finish and then you can release after CLOSED/TIME_WAIT
             call ClientWriteTimer.stop();
          } else {
             dbg(TRANSPORT_CHANNEL, "Close failed\n");
          }
          return;
       }
-      
-      bytesToWrite = (clientTransfer - clientDataSent > 20) ? 20 : (clientTransfer - clientDataSent);
-      
-      for(i = 0; i < bytesToWrite; i++) {
-         // Keep payload bytes non-zero so the receiver counts the full length
-         buffer[i] = (uint8_t)(((clientDataSent + i) % 255) + 1);
+
+      // How many bytes we still need to send total
+      remaining = clientTransfer - clientDataSent;
+
+      // Limit to our small app buffer
+      bytesToWrite = (remaining > sizeof(buffer)) ? sizeof(buffer) : remaining;
+
+      // Make sure we only send full 16-bit values (2 bytes each).
+      // We assume transfer is even in the test cases; if bytesToWrite becomes 0
+      // after this adjustment, just wait for the next timer tick.
+      if (bytesToWrite & 0x1) {   // odd
+         bytesToWrite--;
+         if (bytesToWrite == 0) {
+            return;
+         }
       }
-      
+
+      // How many 16-bit integers have already been *successfully* sent?
+      // clientDataSent is total bytes sent so far, so divide by 2.
+      baseIndex = clientDataSent / 2;
+
+      // Fill the buffer with big-endian uint16_t values:
+      // value = baseIndex + i + 1 → 1,2,3,... across the whole stream
+      for (i = 0; i < bytesToWrite / 2; i++) {
+         uint16_t value = baseIndex + i + 1;   // 1,2,3,... sequence
+         uint8_t hi = (uint8_t)(value >> 8);
+         uint8_t lo = (uint8_t)(value & 0xFF);
+
+         // +1 so both are in 1..255, never 0
+         buffer[2 * i]     = hi + 1;
+         buffer[2 * i + 1] = lo + 1;
+      }
+
       written = call Transport.write(clientSocket, buffer, bytesToWrite);
       clientDataSent += written;
-      
-      dbg(TRANSPORT_CHANNEL, "Client wrote %d bytes, total sent: %d/%d\n", 
+
+      dbg(TRANSPORT_CHANNEL,
+          "Client wrote %d bytes, total sent: %d/%d\n",
           written, clientDataSent, clientTransfer);
-      
    }
+
 
 
    void closeAcceptedSocket(uint8_t idx) {
