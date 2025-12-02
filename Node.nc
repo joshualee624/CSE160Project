@@ -40,6 +40,7 @@ implementation {
    uint16_t clientTransfer = 0;
    uint16_t clientDataSent = 0;
    bool clientCloseWarned = FALSE;
+   uint16_t clientNextValue = 1;
 
 
    void closeAcceptedSocket(uint8_t idx);
@@ -227,6 +228,7 @@ implementation {
       
       clientTransfer = transfer;
       clientDataSent = 0;
+      clientNextValue = 1;
       
       if(call Transport.connect(clientSocket, &destAddr) == FAIL) {
          dbg(TRANSPORT_CHANNEL, "Failed to connect\n");
@@ -289,7 +291,7 @@ implementation {
                   uint8_t lo = loByte - 1;
 
                   uint16_t value = ((uint16_t)hi << 8) | (uint16_t)lo;
-                  dbg(TRANSPORT_CHANNEL, "%hu,", value);
+                  dbg(TRANSPORT_CHANNEL, "%hu\n,", value);
                }
                dbg(TRANSPORT_CHANNEL, "\n");
                // dbg(TRANSPORT_CHANNEL, "Server read %d bytes from socket %d\n",
@@ -349,67 +351,64 @@ implementation {
    // }
    event void ClientWriteTimer.fired() {
       uint8_t  buffer[20];
-      uint16_t i;
       uint16_t bytesToWrite;
-      uint16_t written;
       uint16_t remaining;
-      uint16_t baseIndex;   // how many full 16-bit values we’ve already sent
+      uint16_t i;
+      uint16_t written;
       error_t  res;
-      
+
       if (clientSocket == NULL_SOCKET) {
          call ClientWriteTimer.stop();
          return;
       }
 
-      // All requested bytes have been sent → start graceful close
+      // All requested bytes have been enqueued → begin graceful close
       if (clientDataSent >= clientTransfer) {
          dbg(TRANSPORT_CHANNEL, "Client transfer complete, initiating FIN\n");
          if (!call Transport.readyToClose(clientSocket)) {
             if (!clientCloseWarned) {
-               dbg(TRANSPORT_CHANNEL, "Close deferred; pending data still flushing\n");
-               clientCloseWarned = TRUE;
+               dbg(TRANSPORT_CHANNEL,
+                  "Close deferred; pending data still flushing\n");
+                  clientCloseWarned = TRUE;
             }
             return;
-         }
+         }   
          clientCloseWarned = FALSE;
          res = call Transport.close(clientSocket);
          if (res == SUCCESS) {
-            dbg(TRANSPORT_CHANNEL, "FIN sent for client socket %d\n", clientSocket);
-            call ClientWriteTimer.stop();
+            dbg(TRANSPORT_CHANNEL, "FIN sent for client socket %d\n",
+               clientSocket);
+               call ClientWriteTimer.stop();
          } else {
             dbg(TRANSPORT_CHANNEL, "Close failed\n");
          }
-         return;
+        return;
       }
 
-      // How many bytes we still need to send total
+      // How many BYTES left to enqueue (based on transfer argument)
       remaining = clientTransfer - clientDataSent;
+      {
+         
+         uint16_t maxChunk = 8;   // we know from logs: Data received: bytes=8
+         bytesToWrite = (remaining > maxChunk) ? maxChunk : remaining;
+      }
 
-      // Limit to our small app buffer
-      bytesToWrite = (remaining > sizeof(buffer)) ? sizeof(buffer) : remaining;
-
-      // Make sure we only send full 16-bit values (2 bytes each).
-      // We assume transfer is even in the test cases; if bytesToWrite becomes 0
-      // after this adjustment, just wait for the next timer tick.
-      if (bytesToWrite & 0x1) {   // odd
+      // Only send full 16-bit values
+      if (bytesToWrite & 0x1) {  // odd
          bytesToWrite--;
          if (bytesToWrite == 0) {
             return;
          }
       }
 
-      // How many 16-bit integers have already been *successfully* sent?
-      // clientDataSent is total bytes sent so far, so divide by 2.
-      baseIndex = clientDataSent / 2;
-
-      // Fill the buffer with big-endian uint16_t values:
-      // value = baseIndex + i + 1 → 1,2,3,... across the whole stream
+      // Fill buffer with consecutive uint16_t values starting from clientNextValue
       for (i = 0; i < bytesToWrite / 2; i++) {
-         uint16_t value = baseIndex + i + 1;   // 1,2,3,... sequence
+         uint16_t value = clientNextValue++;  // 1,2,3,4,...
+
          uint8_t hi = (uint8_t)(value >> 8);
          uint8_t lo = (uint8_t)(value & 0xFF);
 
-         // +1 so both are in 1..255, never 0
+         // +1 to avoid 0 in payload (because your receive loop stops on 0 bytes)
          buffer[2 * i]     = hi + 1;
          buffer[2 * i + 1] = lo + 1;
       }
@@ -418,9 +417,10 @@ implementation {
       clientDataSent += written;
 
       dbg(TRANSPORT_CHANNEL,
-          "Client wrote %d bytes, total sent: %d/%d\n",
-          written, clientDataSent, clientTransfer);
+        "Client wrote %d bytes, total sent: %d/%d, nextValue=%hu\n",
+        written, clientDataSent, clientTransfer, clientNextValue);
    }
+
 
 
 

@@ -291,12 +291,9 @@ implementation {
         // Try to push any queued data if nothing is in flight
         trySendQueued(fd);
 
-        // Only close when fully flushed
+        // Only close when send buffer is empty (sequence numbers are uint8_t; simple equality is unreliable on wrap)
         if (sockets[fd].sendBuff.head != sockets[fd].sendBuff.tail) return EBUSY;   // still queued
-        if (sockets[fd].lastAck < sockets[fd].lastSent){
-            closeRequested[fd] = TRUE;
-            return EBUSY;             // still in flight
-        }
+        // treat no queued data as ready; FIN will be ACKed/retransmitted as needed
         closeRequested[fd] = FALSE;
         sendFin(fd); // uses FIN_FLAG, seq = lastSent+1, updates state to FIN_WAIT_1
         return SUCCESS;
@@ -309,7 +306,6 @@ implementation {
         }
         if (sockets[fd].state != ESTABLISHED) return FALSE;
         if (sockets[fd].sendBuff.head != sockets[fd].sendBuff.tail) return FALSE;
-        if (sockets[fd].lastAck < sockets[fd].lastSent) return FALSE;
         return TRUE;
     }
     
@@ -455,29 +451,23 @@ implementation {
             } else if(sockets[fd].state == ESTABLISHED) {
                 call RetransmitTimer.stop();
                 {
-                    uint16_t prevAckStored = sockets[fd].lastAck;       // stored as ack-1
-                    uint16_t prevAckNum = prevAckStored + 1;            // actual ACK number
-                    uint16_t newAckNum = tcpPack->ack;
-                    sockets[fd].lastAck = tcpPack->ack - 1;             // keep stored form
+                    uint8_t prevAck = sockets[fd].lastAck;          // stored as ack-1 (uint8_t space)
+                    uint8_t newAck = (uint8_t)(tcpPack->ack - 1);   // wrap naturally to uint8_t
+                    uint8_t acked = newAck - prevAck;               // uint8_t diff handles wrap
+                    sockets[fd].lastAck = newAck;
 
-                    if (newAckNum > prevAckNum) {
-                        uint16_t acked = newAckNum - prevAckNum;        // newly acked bytes
-                        // advance head by at most the amount actually buffered
+                    if (acked > 0) {
                         uint16_t buffered = (sockets[fd].sendBuff.tail >= sockets[fd].sendBuff.head)
                             ? sockets[fd].sendBuff.tail - sockets[fd].sendBuff.head
                             : SOCKET_BUFFER_SIZE - sockets[fd].sendBuff.head + sockets[fd].sendBuff.tail;
-                        if (acked > buffered) acked = buffered;
+                        if (acked > buffered) acked = (uint8_t)buffered;
                         sockets[fd].sendBuff.head = (sockets[fd].sendBuff.head + acked) % SOCKET_BUFFER_SIZE;
-                        // If peer ACKed past everything we have, mark buffer empty
-                        if (newAckNum > sockets[fd].lastSent) {
-                            sockets[fd].sendBuff.head = sockets[fd].sendBuff.tail;
-                        }
                     }
                 }
                 trySendQueued(fd);
                 if (closeRequested[fd] &&
                     sockets[fd].sendBuff.head == sockets[fd].sendBuff.tail &&
-                    sockets[fd].lastSent == sockets[fd].lastAck) {
+                    sockets[fd].lastAck >= sockets[fd].lastSent) {
                     closeRequested[fd] = FALSE;
                     sendFin(fd);
                 } else if (sockets[fd].state == CLOSE_WAIT &&

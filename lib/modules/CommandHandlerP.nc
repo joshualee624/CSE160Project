@@ -69,10 +69,10 @@ implementation{
                 break;
 
             case CMD_TEST_CLIENT: {
-                uint16_t dest = buff[0] | ((uint16_t)buff[1] << 8);
-                uint8_t srcPort = buff[2];
-                uint8_t destPort = buff[3];
-                uint16_t transfer = buff[4] | ((uint16_t)buff[5] << 8);
+                uint16_t dest     = buff[0];   // 0–255, stored in 16-bit
+                uint8_t  srcPort  = buff[1];
+                uint8_t  destPort = buff[2];
+                uint16_t transfer = buff[3];   // 0–255, since only 1 byte sent
                 dbg(COMMAND_CHANNEL, "Command Type: Client (dest=%u, srcPort=%u, destPort=%u, transfer=%u)\n",
                     dest, srcPort, destPort, transfer);
                 signal CommandHandler.setTestClient(dest, srcPort, destPort, transfer);
