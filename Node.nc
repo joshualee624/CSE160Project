@@ -242,6 +242,7 @@ implementation {
           dest, destPort, srcPort, transfer);
    }
 
+
    event void ServerReadTimer.fired() {
       socket_t newSocket;
       uint8_t i;
@@ -361,6 +362,10 @@ implementation {
          call ClientWriteTimer.stop();
          return;
       }
+      // Only write when the connection is fully established
+      if (call Transport.isEstablished(clientSocket) == FALSE) {
+         return;
+      }
 
       // All requested bytes have been enqueued → begin graceful close
       if (clientDataSent >= clientTransfer) {
@@ -388,7 +393,7 @@ implementation {
       // How many BYTES left to enqueue (based on transfer argument)
       remaining = clientTransfer - clientDataSent;
       {
-         
+
          uint16_t maxChunk = 8;   // we know from logs: Data received: bytes=8
          bytesToWrite = (remaining > maxChunk) ? maxChunk : remaining;
       }

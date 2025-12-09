@@ -150,4 +150,7 @@ interface Transport{
     *   to listen else FAIL.
     */
    command error_t listen(socket_t fd);
+
+   /** Returns TRUE if the socket is in ESTABLISHED state. */
+   command bool isEstablished(socket_t fd);
 }

@@ -13,7 +13,7 @@ CMD_TEST_CLIENT = 4
 CMD_TEST_SERVER = 5
 CMD_KILL = 6
 CMD_ERROR = 9
-
+CMD_CLIENT_CLOSE = 7
 t = Tossim([])
 r = t.radio()
 
@@ -55,7 +55,14 @@ def cmdTestClient(address, dest, srcPort, destPort, transfer):
         int(transfer) & 0xFF
     ]
     sendCommand(address, CMD_TEST_CLIENT, params)
-
+def cmdClientClose(address, dest, srcPort, destPort):
+    params = [
+        int(address) & 0xFF,
+        int(dest) & 0xFF,
+        int(srcPort) & 0xFF,
+        int(destPort) & 0xFF
+    ]
+    sendCommand(address, CMD_CLIENT_CLOSE, params)
 def loadTopo(filename):
     f = open(filename, "r")
     for line in f:

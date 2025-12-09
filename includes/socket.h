@@ -53,15 +53,15 @@ typedef struct socket_store_t{
 
     // This is the sender portion.
     socket_buffer_t sendBuff;
-    uint8_t lastWritten;
-    uint8_t lastAck;
-    uint8_t lastSent;
+    uint16_t lastWritten;
+    uint16_t lastAck;
+    uint16_t lastSent;
 
     // This is the receiver portion
     socket_buffer_t rcvdBuff;
-    uint8_t lastRead;
-    uint8_t lastRcvd;
-    uint8_t nextExpected;
+    uint16_t lastRead;
+    uint16_t lastRcvd;
+    uint16_t nextExpected;
 
     uint16_t RTT;
     uint8_t effectiveWindow;
