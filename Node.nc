@@ -392,9 +392,9 @@ implementation {
 
       // How many BYTES left to enqueue (based on transfer argument)
       remaining = clientTransfer - clientDataSent;
+      // Enqueue a larger chunk per tick to allow multiple packets in flight
       {
-
-         uint16_t maxChunk = 8;   // we know from logs: Data received: bytes=8
+         uint16_t maxChunk = 32;   // enqueue up to 32 bytes per tick
          bytesToWrite = (remaining > maxChunk) ? maxChunk : remaining;
       }
 
@@ -418,8 +418,18 @@ implementation {
          buffer[2 * i + 1] = lo + 1;
       }
 
-      written = call Transport.write(clientSocket, buffer, bytesToWrite);
-      clientDataSent += written;
+      // Write in a loop until we've enqueued the chunk or the buffer/window stops us
+      written = 0;
+      while (written < bytesToWrite) {
+         uint16_t w = call Transport.write(clientSocket,
+                                           &buffer[written],
+                                           bytesToWrite - written);
+         if (w == 0) {
+            break; // no progress; likely window/buffer full
+         }
+         written += w;
+         clientDataSent += w;
+      }
 
       dbg(TRANSPORT_CHANNEL,
         "Client wrote %d bytes, total sent: %d/%d, nextValue=%hu\n",
