@@ -320,27 +320,62 @@ implementation {
 
 
 
-    
     command error_t Transport.close(socket_t fd) {
         if(fd >= MAX_NUM_OF_SOCKETS) {
             return FAIL;
         }
+        
+        // Handle passive close (we received FIN first)
+        if (sockets[fd].state == CLOSE_WAIT) {
+            // Check if send buffer is drained
+            if (sockets[fd].sendBuff.head != sockets[fd].sendBuff.tail) {
+                return EBUSY;  // Still have data to send
+            }
+            if (sockets[fd].lastSent != sockets[fd].lastAck) {
+                return EBUSY;  // Waiting for ACKs
+            }
+            
+            // Send our FIN and move to LAST_ACK
+            sendFinPassive(fd);
+            return SUCCESS;
+        }
+        
+        // Handle active close (we're closing first)
         if (sockets[fd].state != ESTABLISHED) return FAIL;
-
+        
         // Try to push any queued data if nothing is in flight
         trySendQueued(fd);
-
+        
         // Only close when send buffer is empty and nothing in flight
-        if (sockets[fd].sendBuff.head != sockets[fd].sendBuff.tail) return EBUSY;   // still queued
+        if (sockets[fd].sendBuff.head != sockets[fd].sendBuff.tail) return EBUSY;
         if (sockets[fd].lastSent != sockets[fd].lastAck) {
             closeRequested[fd] = TRUE;
             return EBUSY;
         }
         closeRequested[fd] = FALSE;
-        sendFin(fd); // uses FIN_FLAG, seq = lastSent+1, updates state to FIN_WAIT_1
+        sendFin(fd);
         return SUCCESS;
-        
     }
+    // command error_t Transport.close(socket_t fd) {
+    //     if(fd >= MAX_NUM_OF_SOCKETS) {
+    //         return FAIL;
+    //     }
+    //     if (sockets[fd].state != ESTABLISHED) return FAIL;
+
+    //     // Try to push any queued data if nothing is in flight
+    //     trySendQueued(fd);
+
+    //     // Only close when send buffer is empty and nothing in flight
+    //     if (sockets[fd].sendBuff.head != sockets[fd].sendBuff.tail) return EBUSY;   // still queued
+    //     if (sockets[fd].lastSent != sockets[fd].lastAck) {
+    //         closeRequested[fd] = TRUE;
+    //         return EBUSY;
+    //     }
+    //     closeRequested[fd] = FALSE;
+    //     sendFin(fd); // uses FIN_FLAG, seq = lastSent+1, updates state to FIN_WAIT_1
+    //     return SUCCESS;
+        
+    // }
 
     command bool Transport.isEstablished(socket_t fd) {
         if(fd >= MAX_NUM_OF_SOCKETS) {
@@ -507,7 +542,7 @@ implementation {
                 sockets[fd].lastAck = tcpPack->ack;
                 sockets[fd].lastSent += 1;
                 dbg(TRANSPORT_CHANNEL, "Connection established: fd=%d\n", fd);
-            } else if (sockets[fd].state == ESTABLISHED) {
+            } else if (sockets[fd].state == ESTABLISHED || sockets[fd].state == CLOSE_WAIT) {
                 uint16_t prevLastAck;
                 uint16_t newLastAck;
                 uint16_t delta;
