@@ -42,11 +42,72 @@ implementation {
    bool clientCloseWarned = FALSE;
    uint16_t clientNextValue = 1;
 
+  socket_t chatSock = NULL_SOCKET;
+  socket_t serverSock = NULL_SOCKET;
+  bool chatConnected = FALSE;
+  bool isChatClient = FALSE;
+  bool isChatServer = FALSE;
+  // simple outgoing queue for chat client (lines to send after ESTABLISHED)
+  uint8_t chatSendHead = 0;
+  uint8_t chatSendTail = 0;
+  char chatSendQueue[8][64];
+  uint8_t chatSendLen[8];
+  char chatCliBuf[128];
+  uint8_t chatCliLen = 0;
+
+
+  // bounded copy helper to ensure null-terminated C strings from command payloads
+  void copyBounded(char* dst, uint8_t dstSize, uint8_t* src) {
+     uint8_t n = 0;
+     if (dstSize == 0) {
+        return;
+     }
+     while (n + 1 < dstSize && src[n] != 0) {
+        dst[n] = (char)src[n];
+        n++;
+     }
+     dst[n] = '\0';
+  }
+
+  void handleChatClientData(uint8_t *buf, uint16_t n) {
+      uint16_t i;
+
+      for (i = 0; i < n; i++) {
+         // prevent overflow; if full, reset (or drop oldest)
+         if (chatCliLen >= sizeof(chatCliBuf) - 1) {
+            chatCliLen = 0;
+         }
+
+         chatCliBuf[chatCliLen++] = (char)buf[i];
+
+         // end-of-line detected
+         if (buf[i] == '\n') {
+            chatCliBuf[chatCliLen] = '\0';
+            dbg(TRANSPORT_CHANNEL, "Chat client line: %s", chatCliBuf);
+            chatCliLen = 0;
+         }
+      }
+   }
+
+
+  typedef struct {
+      socket_t sock;
+      char username[16];
+      bool inUse;
+   } ChatUser_t;
+
+   ChatUser_t chatUsers[MAX_NUM_OF_SOCKETS];
+
+   //per-socket receive buffers for assembling lines
+   char chatRecvBuf[MAX_NUM_OF_SOCKETS][64];
+   uint8_t chatRecvLen[MAX_NUM_OF_SOCKETS];
 
    void closeAcceptedSocket(uint8_t idx);
    void resetAcceptedSockets();
    void cleanupServerSocket();
    void cleanupClientSocket();
+   bool enqueueChatLine(const char* line);
+   void flushChatQueue();
    void makePack(pack *Package, uint16_t src, uint16_t dest, uint16_t TTL, uint16_t Protocol, uint16_t seq, uint8_t *payload, uint8_t length);
 
    event void Boot.booted() {
@@ -173,6 +234,7 @@ implementation {
    event void CommandHandler.printDistanceVector() {}
    event void CommandHandler.setTestServer(uint8_t port) {
       socket_addr_t addr;
+      uint8_t i;
       
       cleanupServerSocket();
 
@@ -196,8 +258,19 @@ implementation {
          cleanupServerSocket();
          return;
       }
-      
-      call ServerReadTimer.startPeriodic(1000);
+      isChatServer = (port == 41);
+      if (isChatServer) {
+         isChatClient = FALSE;
+         for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+            chatUsers[i].inUse = FALSE;
+            chatUsers[i].username[0] = '\0';
+            chatRecvLen[i] = 0;
+         }
+         resetAcceptedSockets();
+         call ServerReadTimer.startPeriodic(200);
+      } else {
+         call ServerReadTimer.startPeriodic(1000);
+      }
       
       dbg(TRANSPORT_CHANNEL, "Server started on port %d\n", port);
    }
@@ -242,66 +315,143 @@ implementation {
           dest, destPort, srcPort, transfer);
    }
 
+    void processChatCommand(uint8_t idx, socket_t sock, char* line);
+
+   void handleChatServerData(uint8_t idx, socket_t sock, uint8_t* buf, uint16_t len) {
+       uint8_t k;
+       uint8_t remaining;
+      //  dbg(TRANSPORT_CHANNEL,"Server data idx=%hhu sock=%hhu len=%u buf=\"%.*s\"\n",idx, sock, (unsigned)len, (int)len, buf);
+      dbg(TRANSPORT_CHANNEL, "Server data idx=%d sock=%d len=%d\n", idx, sock, len);
+
+
+       if (len > sizeof chatRecvBuf[idx]) {
+          len = sizeof chatRecvBuf[idx];
+       }
+
+       // Append new bytes into this socket's line buffer
+       if (chatRecvLen[idx] + len > sizeof chatRecvBuf[idx]) {
+          // overflow protection: reset buffer
+          chatRecvLen[idx] = 0;
+      }
+      memcpy(&chatRecvBuf[idx][chatRecvLen[idx]], buf, len);
+      chatRecvLen[idx] += len;
+
+      // Look for one or more "\r\n" sequences; process all complete commands
+      while (1) {
+         bool found = FALSE;
+         for (k = 1; k < chatRecvLen[idx]; k++) {
+            if (chatRecvBuf[idx][k - 1] == '\r' && chatRecvBuf[idx][k] == '\n') {
+               // We have a complete command from 0..k
+               chatRecvBuf[idx][k - 1] = '\0'; // terminate string at \r
+               chatRecvBuf[idx][k] = '\0';
+
+               // Process the command line
+               processChatCommand(idx, sock, chatRecvBuf[idx]);
+
+               // Shift any extra bytes (support multiple commands in one read)
+               remaining = chatRecvLen[idx] - (k + 1);
+               if (remaining > 0) {
+                  memmove(chatRecvBuf[idx], &chatRecvBuf[idx][k + 1], remaining);
+               }
+               chatRecvLen[idx] = remaining;
+               found = TRUE;
+               break;
+            }
+         }
+         if (!found) {
+            break; // no more complete lines in buffer
+         }
+      }
+    }
+
+
 
    event void ServerReadTimer.fired() {
       socket_t newSocket;
       uint8_t i;
       uint8_t buffer[128];
       uint16_t bytesRead;
-      bool inserted = FALSE;
+      bool inserted;
+      bool active;
 
-      if(serverSocket == NULL_SOCKET) {
-         call ServerReadTimer.stop();
-         return;
-      }
-      
-      newSocket = call Transport.accept(serverSocket);
-      if(newSocket != NULL_SOCKET) {
-         for(i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
-            if(acceptedSockets[i] == NULL_SOCKET) {
+      active = FALSE;
+
+      // server section 
+      if (isChatServer && serverSocket != NULL_SOCKET) {
+         active = TRUE;
+
+         // Accept as many pending connections as possible this tick
+         while (1) {
+            inserted = FALSE;
+            newSocket = call Transport.accept(serverSocket);
+            if (newSocket == NULL_SOCKET) {
+            break;
+            }
+
+            for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+            if (acceptedSockets[i] == NULL_SOCKET) {
                acceptedSockets[i] = newSocket;
-               if(numAcceptedSockets < MAX_NUM_OF_SOCKETS) {
+               chatRecvLen[i] = 0;
+               if (numAcceptedSockets < MAX_NUM_OF_SOCKETS) {
                   numAcceptedSockets++;
                }
                inserted = TRUE;
                break;
             }
-         }
-         if(inserted) {
+            }
+
+            if (inserted) {
             dbg(TRANSPORT_CHANNEL, "New connection accepted: socket=%d\n", newSocket);
-         } else {
+            } else {
             dbg(TRANSPORT_CHANNEL, "Connection table full, closing new socket=%d\n", newSocket);
             call Transport.close(newSocket);
             call Transport.release(newSocket);
+            }
          }
-      }
-      
-      for(i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
-         if(acceptedSockets[i] != NULL_SOCKET) {
-            bytesRead = call Transport.read(acceptedSockets[i], buffer, 128);
-            if(bytesRead > 0) {
-               uint16_t j;
-               
-               // Decode and print 16-bit values from this chunk
-               dbg(TRANSPORT_CHANNEL, "Reading Data:");
-               for (j = 0; j + 1 < bytesRead; j += 2) {
-                  uint8_t hiByte = buffer[j];
-                  uint8_t loByte = buffer[j + 1];
 
-                  uint8_t hi = hiByte - 1;
-                  uint8_t lo = loByte - 1;
-
-                  uint16_t value = ((uint16_t)hi << 8) | (uint16_t)lo;
-                  dbg(TRANSPORT_CHANNEL, "%hu\n,", value);
+         // Drain each accepted socket completely
+         for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+            if (acceptedSockets[i] != NULL_SOCKET) {
+            do {
+               bytesRead = call Transport.read(acceptedSockets[i], buffer, 128);
+               if (bytesRead > 0) {
+                  handleChatServerData(i, acceptedSockets[i], buffer, bytesRead);
                }
-               dbg(TRANSPORT_CHANNEL, "\n");
-               // dbg(TRANSPORT_CHANNEL, "Server read %d bytes from socket %d\n",
-               //     bytesRead, acceptedSockets[i]);
+            } while (bytesRead > 0);
             }
          }
       }
 
-   }
+      // Client section 
+      if (isChatClient && chatSock != NULL_SOCKET) {
+         active = TRUE;
+
+         if (call Transport.isEstablished(chatSock)) {
+            if (!chatConnected) {
+               dbg(TRANSPORT_CHANNEL, "Chat client connected\n");
+            }
+            chatConnected = TRUE;
+            flushChatQueue();
+         }else{
+            chatConnected = FALSE;
+         }
+
+         // Drain client receive too
+         do {
+            bytesRead = call Transport.read(chatSock, buffer, 127);
+            if (bytesRead > 0) {
+            // buffer[bytesRead] = '\0';
+            handleChatClientData(buffer, bytesRead);
+            // dbg(TRANSPORT_CHANNEL, "Chat client recv: %s\n", buffer);
+            }
+         } while (bytesRead > 0);
+      }
+
+      if (!active) {
+         call ServerReadTimer.stop();
+      }
+      }
+
 
    // event void ClientWriteTimer.fired() {
    //    uint8_t buffer[20];
@@ -473,8 +623,388 @@ implementation {
       clientCloseWarned = FALSE;
    }
 
-   event void CommandHandler.setAppServer() {}
-   event void CommandHandler.setAppClient() {}
+   bool enqueueChatLine(const char* line) {
+      uint8_t nextTail;
+      uint8_t len;
+      uint8_t idx;
+      if (line == NULL) {
+         return FALSE;
+      }
+      nextTail = (chatSendTail + 1) % 8;
+      if (nextTail == chatSendHead) {
+         return FALSE; // queue full
+      }
+      len = strlen(line);
+      if (len >= sizeof chatSendQueue[0]) {
+         len = sizeof chatSendQueue[0] - 1;
+      }
+      idx = chatSendTail;
+
+      memcpy(chatSendQueue[chatSendTail], line, len);
+      chatSendQueue[chatSendTail][len] = '\0';
+      chatSendLen[chatSendTail] = len;
+      chatSendTail = nextTail;
+      dbg(TRANSPORT_CHANNEL, "enqueue stored len=%d (orig=%d) text='%s'\n",chatSendLen[idx], (uint8_t)strlen(line), chatSendQueue[idx]);
+
+      return TRUE;
+   }
+
+   void flushChatQueue() {
+      while (chatSendHead != chatSendTail) {
+         uint8_t len;
+         uint16_t written;
+         uint8_t remaining;
+         if (chatSock == NULL_SOCKET) {
+            return;
+         }
+         if (!call Transport.isEstablished(chatSock)) {
+            return;
+         }
+         len = chatSendLen[chatSendHead];
+         written = call Transport.write(chatSock,
+                                        (uint8_t*)chatSendQueue[chatSendHead],
+                                        len);
+         if (written == 0) {
+            return;
+         }
+         if (written < len) {
+            remaining = (uint8_t)(len - written);
+            memmove(chatSendQueue[chatSendHead],
+                    &chatSendQueue[chatSendHead][written],
+                    remaining);
+            chatSendQueue[chatSendHead][remaining] = '\0';
+            chatSendLen[chatSendHead] = remaining;
+            return;
+         }
+         chatSendHead = (chatSendHead + 1) % 8;
+      }
+   }
+
+   event void CommandHandler.chatHello(uint8_t serverAddr, uint8_t clientPort, uint8_t *username) {
+      socket_addr_t myAddr;
+      socket_addr_t dest;
+      char buf[32];
+      uint8_t len;
+      char uname[16];
+      uint8_t ulen;
+
+      ulen = strnlen((char*)username, sizeof(uname) - 1);
+      memcpy(uname, username, ulen);
+      uname[ulen] = '\0';
+
+      chatSock = call Transport.socket();
+      if (chatSock == NULL_SOCKET) {
+         dbg(TRANSPORT_CHANNEL, "Node: chatHello no free socket\n");
+         return;
+      }
+      isChatClient = TRUE;
+      isChatServer = FALSE;
+      chatSendHead = 0;
+      chatSendTail = 0;
+
+      myAddr.port = clientPort;
+      myAddr.addr = TOS_NODE_ID;
+
+      if (call Transport.bind(chatSock, &myAddr) == FAIL) {
+         dbg(TRANSPORT_CHANNEL, "Node: chatHello bind failed\n");
+         call Transport.release(chatSock);
+         chatSock = NULL_SOCKET;
+         return;
+      }
+
+      dest.port = 41;            // chat server port
+      dest.addr = serverAddr;
+
+      call Transport.connect(chatSock, &dest);
+      chatConnected = FALSE;
+
+      len = snprintf(buf, sizeof buf, "hello %s\r\n", uname);
+      dbg(TRANSPORT_CHANNEL, "Client hello len=%d last2=%d,%d\n",len, buf[len-2], buf[len-1]);
+
+      enqueueChatLine(buf);
+      call ServerReadTimer.startPeriodic(200);
+      
+   }
+
+
+
+   event void CommandHandler.chatMsg(uint8_t *message) {
+      char buf[64];
+      uint8_t len;
+      char msg[48];
+      uint8_t mlen;
+
+      mlen = strnlen((char*)message, sizeof(msg) - 1);
+      memcpy(msg, message, mlen);
+      msg[mlen] = '\0';
+
+      if (!chatConnected) {
+         dbg(TRANSPORT_CHANNEL, "Chat not connected yet\n");
+         return;
+      }
+      if (chatSock == NULL_SOCKET) {
+         dbg(TRANSPORT_CHANNEL, "Node: chatMsg but chatSock is NULL\n");
+         return;
+      }
+
+
+
+      len = snprintf(buf, sizeof buf, "msg %s\r\n", msg);
+      dbg(TRANSPORT_CHANNEL, "Node: chat msg '%s'\n", buf);
+      enqueueChatLine(buf);
+      flushChatQueue();
+   }
+
+   event void CommandHandler.chatWhisper(uint8_t *username, uint8_t *message) {
+      char buf[64];
+      uint8_t len;
+      char uname[16];
+      char msg[48];
+      uint8_t ulen;
+      uint8_t mlen;
+
+      if (!chatConnected) {
+         dbg(TRANSPORT_CHANNEL, "Chat not connected yet\n");
+         return;
+      }
+      if (chatSock == NULL_SOCKET) {
+         dbg(TRANSPORT_CHANNEL, "Node: chatWhisper but chatSock is NULL\n");
+         return;
+      }
+       // --- copy username into local C string ---
+      ulen = strnlen((char*)username, sizeof(uname) - 1);
+      memcpy(uname, username, ulen);
+      uname[ulen] = '\0';
+
+      // --- copy message into local C string ---
+      mlen = strnlen((char*)message, sizeof(msg) - 1);
+      memcpy(msg, message, mlen);
+      msg[mlen] = '\0';
+
+      len = snprintf(buf, sizeof buf, "whisper %s %s\r\n",
+                     (char*)username, (char*)message);
+      dbg(TRANSPORT_CHANNEL, "Node: chat whisper '%s'\n", buf);
+      enqueueChatLine(buf);
+      flushChatQueue();
+   }
+
+   event void CommandHandler.chatListusr() {
+      char buf[16] = "listusr\r\n";
+
+      if (!chatConnected) {
+         dbg(TRANSPORT_CHANNEL, "Chat not connected yet\n");
+         return;
+      }
+      if (chatSock == NULL_SOCKET) {
+         dbg(TRANSPORT_CHANNEL, "Node: chatListusr but chatSock is NULL\n");
+         return;
+      }
+
+      
+      dbg(TRANSPORT_CHANNEL, "Node: chat listusr\n");
+      enqueueChatLine(buf);
+      flushChatQueue();
+   }
+
+   event void CommandHandler.setAppServer() {
+      socket_addr_t addr;
+      uint8_t i;
+
+      cleanupServerSocket();        // if you have helper like that
+      isChatServer = TRUE;
+      isChatClient = FALSE;
+
+      serverSocket = call Transport.socket();
+      if (serverSocket == NULL_SOCKET) {
+         dbg(TRANSPORT_CHANNEL, "Node: setAppServer failed to create socket\n");
+         return;
+      }
+
+      addr.port = 41;
+      addr.addr = TOS_NODE_ID;
+
+      if (call Transport.bind(serverSocket, &addr) == FAIL) {
+         dbg(TRANSPORT_CHANNEL, "Node: setAppServer bind failed\n");
+         call Transport.release(serverSocket);
+         serverSocket = NULL_SOCKET;
+         return;
+      }
+
+      call Transport.listen(serverSocket);
+      dbg(TRANSPORT_CHANNEL, "Node: chat server listening on port 41\n");
+      for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+         chatUsers[i].inUse = FALSE;
+         chatUsers[i].username[0] = '\0';
+         chatRecvLen[i] = 0;
+      }
+      resetAcceptedSockets();
+      call ServerReadTimer.startPeriodic(200);
+   }
+
+
+
+   event void CommandHandler.setAppClient() {
+      dbg(TRANSPORT_CHANNEL, "Node: setAppClient\n");
+      isChatClient = TRUE;
+      isChatServer = FALSE;
+      chatSendHead = 0;
+      chatSendTail = 0;
+      // clientSock/chatSock you already set in chatHello
+   }
+
+   ChatUser_t* findUserBySock(socket_t sock) {
+      uint8_t i;
+      for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+         if (chatUsers[i].inUse && chatUsers[i].sock == sock) {
+            return &chatUsers[i];
+         }
+      }
+      return NULL;
+   }
+
+   ChatUser_t* findUserByName(char* name) {
+      uint8_t i;
+      for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+         if (chatUsers[i].inUse && strcmp(chatUsers[i].username, name) == 0) {
+            return &chatUsers[i];
+         }
+      }
+      return NULL;
+   }
+
+   ChatUser_t* allocUser(socket_t sock) {
+      uint8_t i;
+      for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+         if (!chatUsers[i].inUse) {
+            chatUsers[i].inUse = TRUE;
+            chatUsers[i].sock = sock;
+            chatUsers[i].username[0] = '\0';
+            return &chatUsers[i];
+         }
+      }
+      return NULL;
+   }
+
+   void processChatCommand(uint8_t idx, socket_t sock, char* line) {
+      // line is something like:
+      // "hello josh"
+      // "msg Hello everyone!"
+      // "whisper mike hi"
+      // "listusr"
+
+      ChatUser_t *sender;
+      ChatUser_t *target;
+      ChatUser_t *u;
+      char out[80];
+      uint8_t i;
+      uint8_t pos;
+      char *name;
+      char *text;
+      char *rest;
+      char *space;
+      char *targetName;
+
+      if (strncmp(line, "hello ", 6) == 0) {
+         name = line + 6;
+         u = findUserBySock(sock);
+         if (u == NULL) {
+            u = allocUser(sock);
+         }
+         if (u != NULL) {
+            strncpy(u->username, name, sizeof u->username - 1);
+            u->username[sizeof u->username - 1] = '\0';
+            dbg(TRANSPORT_CHANNEL,
+               "Server: user '%s' registered on socket %d\n",
+               u->username, sock);
+         }
+      }
+      else if (strncmp(line, "msg ", 4) == 0) {
+         text = line + 4;
+         sender = findUserBySock(sock);
+
+         if (sender == NULL) {
+            dbg(TRANSPORT_CHANNEL,
+               "Server: msg from unknown socket %d\n", sock);
+            return;
+         }
+
+         snprintf(out, sizeof out, "%s: %s\r\n", sender->username, text);
+         dbg(TRANSPORT_CHANNEL, "Server: msg from %s: %s\n", sender->username, text);
+         // broadcast to all users
+         for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+            if (chatUsers[i].inUse) {
+            call Transport.write(chatUsers[i].sock,
+                                 (uint8_t*) out,
+                                 strlen(out));
+            }
+         }
+      }
+      else if (strncmp(line, "whisper ", 8) == 0) {
+         rest = line + 8;
+         space = strchr(rest, ' ');
+         if (!space) {
+            return;
+         }
+
+         *space = '\0';
+         targetName = rest;
+         text = space + 1;
+
+         sender = findUserBySock(sock);
+         target = findUserByName(targetName);
+         
+         if (sender == NULL || target == NULL) {
+            dbg(TRANSPORT_CHANNEL, "Server: whisper missing sender/target (s=%p, t=%p)\n",sender, target);
+            return;
+         }
+         dbg(TRANSPORT_CHANNEL, "Server: whisper %s -> %s: %s\n", sender->username, target->username, text);
+
+         snprintf(out, sizeof out,
+                  "(whisper from %s): %s\r\n",
+                  sender->username, text);
+         call Transport.write(target->sock,
+                              (uint8_t*) out,
+                              strlen(out));
+      }
+      else if (strcmp(line, "listusr") == 0) {
+         pos = 0;
+
+         pos += snprintf(out + pos, sizeof out - pos, "listUsrRply ");
+
+         for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+            if (chatUsers[i].inUse) {
+            if (pos > 13) { // already have at least one name
+               if (pos < sizeof out - 2) {
+                  out[pos++] = ',';
+                  out[pos++] = ' ';
+               }
+            }
+            pos += snprintf(out + pos,
+                              sizeof out - pos,
+                              "%s",
+                              chatUsers[i].username);
+            }
+         }
+
+         if (pos < sizeof out - 2) {
+            out[pos++] = '\r';
+            out[pos++] = '\n';
+         }
+         out[pos] = '\0';
+         dbg(TRANSPORT_CHANNEL, "Server: listusr reply: %s\n", out);
+         call Transport.write(sock, (uint8_t*) out, pos);
+      }
+   }
+
+
+
+
+
+
+
+
+   // event void CommandHandler.setAppServer() {}
+   // event void CommandHandler.setAppClient() {}
 
    void makePack(pack *Package, uint16_t src, uint16_t dest, uint16_t TTL, uint16_t protocol, uint16_t seq, uint8_t* payload, uint8_t length) {
       Package->src = src;

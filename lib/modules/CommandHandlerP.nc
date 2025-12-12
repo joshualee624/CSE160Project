@@ -85,6 +85,64 @@ implementation{
                 signal CommandHandler.setTestServer(port);
                 break;
             }
+            case CMD_HELLO: {
+                uint8_t serverAddr = buff[0];
+                uint8_t clientPort = buff[1];
+                uint8_t *username  = &buff[2];
+
+                dbg(COMMAND_CHANNEL,
+                    "Command Type: CHAT HELLO (server=%hhu, clientPort=%hhu, username=%s)\n",
+                    serverAddr, clientPort, username);
+
+                signal CommandHandler.chatHello(serverAddr, clientPort, username);
+                break;
+            }
+            case CMD_MSG: {
+            // Whole payload is the message string
+                uint8_t *message = buff;
+
+                dbg(COMMAND_CHANNEL,
+                    "Command Type: CHAT MSG (%s)\n", message);
+
+                signal CommandHandler.chatMsg(message);
+                break;
+            }
+            case CMD_WHISPER: {
+                uint8_t *userPtr = buff;
+                uint8_t *msgPtr  = buff;
+                uint8_t i;
+
+                // Find separator 0 between username and message
+                for (i = 0; i < 25; i++) {   // 25 = CommandMsg payload length
+                    if (msgPtr[i] == 0) {
+                        msgPtr = &msgPtr[i + 1];   // start of message
+                        break;
+                    }
+                }
+
+                dbg(COMMAND_CHANNEL,
+                    "Command Type: CHAT WHISPER (user=%s, msg=%s)\n",
+                    userPtr, msgPtr);
+
+                signal CommandHandler.chatWhisper(userPtr, msgPtr);
+                break;
+            }
+            case CMD_LISTUSR: {
+                dbg(COMMAND_CHANNEL, "Command Type: CHAT LISTUSR\n");
+                signal CommandHandler.chatListusr();
+                break;
+            }
+            case CMD_SET_APP_SERVER: {
+                dbg(COMMAND_CHANNEL, "Command Type: CHAT SET_APP_SERVER\n");
+                signal CommandHandler.setAppServer();
+                break;
+            }
+            case CMD_SET_APP_CLIENT: {
+                dbg(COMMAND_CHANNEL, "Command Type: CHAT SET_APP_CLIENT\n");
+                signal CommandHandler.setAppClient();
+                break;
+            }
+
 
             default:
                 dbg(COMMAND_CHANNEL, "CMD_ERROR: \"%d\" does not match any known commands.\n", msg->id);

@@ -17,7 +17,14 @@ enum{
 	CMD_TEST_CLIENT=4,
 	CMD_TEST_SERVER=5,
 	CMD_KILL=6,
-	CMD_ERROR=9
+   CMD_CLIENT_CLOSE=7,
+	CMD_ERROR=9,
+	CMD_HELLO=10,        
+  	CMD_MSG=11,        
+  	CMD_WHISPER=12,      
+  	CMD_LISTUSR=13,
+      CMD_SET_APP_SERVER=14,
+      CMD_SET_APP_CLIENT=15        
 };
 
 enum{

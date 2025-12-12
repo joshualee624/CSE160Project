@@ -14,12 +14,49 @@ CMD_TEST_SERVER = 5
 CMD_KILL = 6
 CMD_ERROR = 9
 CMD_CLIENT_CLOSE = 7
+CMD_HELLO = 10
+CMD_MSG = 11
+CMD_WHISPER = 12
+CMD_LISTUSR = 13
+CMD_SET_APP_SERVER = 14     
+CMD_SET_APP_CLIENT = 15
+
 t = Tossim([])
+t.randomSeed(12345)
 r = t.radio()
 
 # Enable dbg channels we care about
 for ch in ["transport"]:
     t.addChannel(ch, sys.stdout)
+
+
+def pack_string(s, max_len=25):
+    """Return a list of byte values for ASCII string s, truncated to max_len."""
+    b = [ord(c) & 0xFF for c in s]
+    return b[:max_len]
+
+def cmdHello(nodeId, serverNode, username, clientPort):
+    params = []
+    params.append(int(serverNode) & 0xFF)
+    params.append(int(clientPort) & 0xFF)
+    params.extend(pack_string(username, max_len=23))  # 2 + 23 = 25 max
+    sendCommand(nodeId, CMD_HELLO, params)
+
+def cmdMsg(nodeId, message):
+    params = pack_string(message, max_len=25)
+    sendCommand(nodeId, CMD_MSG, params)
+
+def cmdWhisper(nodeId, username, message):
+    params = []
+    u_bytes = pack_string(username, max_len=10)  # up to you, just keep total ≤ 25
+    m_bytes = pack_string(message, max_len=14)   # 10 + 1 + 14 = 25
+    params.extend(u_bytes)
+    params.append(0)  # separator
+    params.extend(m_bytes)
+    sendCommand(nodeId, CMD_WHISPER, params)
+
+def cmdListUsr(nodeId):
+    sendCommand(nodeId, CMD_LISTUSR, [])
 
 def sendCommand(destNode, cmdId, params):
     msg = CommandMsg()
@@ -55,14 +92,7 @@ def cmdTestClient(address, dest, srcPort, destPort, transfer):
         int(transfer) & 0xFF
     ]
     sendCommand(address, CMD_TEST_CLIENT, params)
-def cmdClientClose(address, dest, srcPort, destPort):
-    params = [
-        int(address) & 0xFF,
-        int(dest) & 0xFF,
-        int(srcPort) & 0xFF,
-        int(destPort) & 0xFF
-    ]
-    sendCommand(address, CMD_CLIENT_CLOSE, params)
+
 def loadTopo(filename):
     f = open(filename, "r")
     for line in f:
@@ -91,6 +121,27 @@ def bootAll(numNodes, startTime=100001):
         n = t.getNode(i)
         n.bootAtTime(startTime + i)
 
+# if __name__ == "__main__":
+#     NUM_NODES = 10
+#     TOPO = "topo/topo.txt"
+#     NOISE = "noise/meyer-heavy.txt"
+#     START_TIME = 100001
+
+#     loadTopo(TOPO)
+#     loadNoise(NOISE, NUM_NODES)
+#     bootAll(NUM_NODES, startTime=START_TIME)
+
+#     # Run until after all motes have booted before issuing commands
+#     while t.time() < START_TIME + 2000:
+#         t.runNextEvent()
+
+#     # Test: node 1 = server, node 2 = client
+#     cmdTestServer(1, 10)
+#     cmdTestClient(2, 1, 20, 10, 100)
+
+#     # Run the simulation
+#     for _ in range(200000):
+#         t.runNextEvent()
 if __name__ == "__main__":
     NUM_NODES = 10
     TOPO = "topo/topo.txt"
@@ -101,14 +152,25 @@ if __name__ == "__main__":
     loadNoise(NOISE, NUM_NODES)
     bootAll(NUM_NODES, startTime=START_TIME)
 
-    # Run until after all motes have booted before issuing commands
     while t.time() < START_TIME + 2000:
         t.runNextEvent()
 
-    # Test: node 1 = server, node 2 = client
-    cmdTestServer(1, 10)
-    cmdTestClient(2, 1, 20, 10, 100)
+    # Start chat server on node 1 (we'll handle this in CommandHandler/ChatServer)
+    cmdTestServer(1, 41)   # or later change to a dedicated CMD if you want
 
-    # Run the simulation
+    # Tell node 2 to connect to node 1 and say hello
+    cmdHello(2, 1, "josh", 20)
+
+    for _ in range(50000):
+        t.runNextEvent()
+
+    # Later, send a broadcast message from node 2
+    cmdMsg(2, "Hello everyone!")
+
+    cmdWhisper(2, "josh", "hi there")
+
+    # Ask node 2 to request list of users
+    cmdListUsr(2)
+
     for _ in range(200000):
         t.runNextEvent()
