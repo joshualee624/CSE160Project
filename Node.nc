@@ -42,18 +42,22 @@ implementation {
    bool clientCloseWarned = FALSE;
    uint16_t clientNextValue = 1;
 
-  socket_t chatSock = NULL_SOCKET;
-  socket_t serverSock = NULL_SOCKET;
-  bool chatConnected = FALSE;
-  bool isChatClient = FALSE;
-  bool isChatServer = FALSE;
-  // simple outgoing queue for chat client (lines to send after ESTABLISHED)
-  uint8_t chatSendHead = 0;
-  uint8_t chatSendTail = 0;
-  char chatSendQueue[8][64];
-  uint8_t chatSendLen[8];
-  char chatCliBuf[128];
-  uint8_t chatCliLen = 0;
+   socket_t chatSock = NULL_SOCKET;
+   socket_t serverSock = NULL_SOCKET;
+   bool chatConnected = FALSE;
+   bool isChatClient = FALSE;
+   bool isChatServer = FALSE;
+   // simple outgoing queue for chat client (lines to send after ESTABLISHED)
+   uint8_t chatSendHead = 0;
+   uint8_t chatSendTail = 0;
+   char chatSendQueue[8][64];
+   uint8_t chatSendLen[8];
+   char chatCliBuf[128];
+   uint8_t chatCliLen = 0;
+   bool chatCloseRequested = FALSE;
+   bool chatFinSent = FALSE;
+   bool chatPeerFinSeen = FALSE;
+
 
 
   // bounded copy helper to ensure null-terminated C strings from command payloads
@@ -409,17 +413,17 @@ implementation {
             }
          }
 
-         // Drain each accepted socket completely
-         for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
-            if (acceptedSockets[i] != NULL_SOCKET) {
+      // Drain each accepted socket completely
+      for (i = 0; i < MAX_NUM_OF_SOCKETS; i++) {
+         if (acceptedSockets[i] != NULL_SOCKET) {
             do {
                bytesRead = call Transport.read(acceptedSockets[i], buffer, 128);
                if (bytesRead > 0) {
                   handleChatServerData(i, acceptedSockets[i], buffer, bytesRead);
                }
             } while (bytesRead > 0);
-            }
          }
+      }
       }
 
       // Client section 
@@ -431,9 +435,30 @@ implementation {
                dbg(TRANSPORT_CHANNEL, "Chat client connected\n");
             }
             chatConnected = TRUE;
+            chatPeerFinSeen = FALSE;
             flushChatQueue();
-         }else{
+         } else {
             chatConnected = FALSE;
+            // if we've sent FIN and observed peer FIN, release now
+            if (chatFinSent && chatPeerFinSeen) {
+               dbg(TRANSPORT_CHANNEL, "Chat client: both FINs seen, releasing socket=%d\n", chatSock);
+               call Transport.release(chatSock);
+               chatSock = NULL_SOCKET;
+               chatConnected = FALSE;
+               chatFinSent = FALSE;
+               chatPeerFinSeen = FALSE;
+            }
+         }
+         if (chatCloseRequested && chatSock != NULL_SOCKET && call Transport.isEstablished(chatSock)) {
+            if (call Transport.readyToClose(chatSock)) {
+               error_t r = call Transport.close(chatSock);
+               if (r == SUCCESS) {
+                  dbg(TRANSPORT_CHANNEL, "Chat client: FIN sent on socket=%d\n", chatSock);
+                  chatFinSent = TRUE;
+                  chatCloseRequested = FALSE;
+               }
+               // if EBUSY, do nothing; retry next tick
+            }
          }
 
          // Drain client receive too
@@ -444,13 +469,14 @@ implementation {
             handleChatClientData(buffer, bytesRead);
             // dbg(TRANSPORT_CHANNEL, "Chat client recv: %s\n", buffer);
             }
+
          } while (bytesRead > 0);
       }
 
       if (!active) {
          call ServerReadTimer.stop();
       }
-      }
+   }
 
 
    // event void ClientWriteTimer.fired() {
@@ -803,6 +829,7 @@ implementation {
       
       dbg(TRANSPORT_CHANNEL, "Node: chat listusr\n");
       enqueueChatLine(buf);
+      chatCloseRequested = TRUE;
       flushChatQueue();
    }
 
@@ -993,6 +1020,8 @@ implementation {
          out[pos] = '\0';
          dbg(TRANSPORT_CHANNEL, "Server: listusr reply: %s\n", out);
          call Transport.write(sock, (uint8_t*) out, pos);
+         // initiate server FIN once reply buffered; TransportP defers until send buffer drains
+         call Transport.close(sock);
       }
    }
 
